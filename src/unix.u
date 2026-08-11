@@ -65,17 +65,45 @@ unix.upstreamPlaceholder drvPath output =
 -- output paths are fixed at eval time, so we splice the literal
 -- store path and list the .drv in inputs. No placeholder needed.
 
-type unix.Dep = Local unix.Pkg | Nixpkgs Text
+-- Fetch is name, url, SRI hash. It becomes a fixed-output
+-- derivation: the sandbox gets network, the daemon checks the hash.
+
+type unix.Dep = Local unix.Pkg | Nixpkgs Text | Fetch Text Text Text
 
 type unix.Pkg = { name : Text, script : Text, deps : [unix.Dep] }
 
 unix.system : Text
 unix.system = "x86_64-linux"
 
+-- Output sections. Floating CA: the daemon computes the path.
+-- Fixed: we give the SRI hash of the file, the daemon derives the
+-- path from it.
+
+unix.caOutputs : Json
+unix.caOutputs =
+  Json.object
+    [ ( "out"
+      , Json.object
+          [ ("hashAlgo", Json.text "sha256")
+          , ("method", Json.text "nar")
+          ]
+      )
+    ]
+
+unix.fixedOutputs : Text -> Json
+unix.fixedOutputs sri =
+  Json.object
+    [ ( "out"
+      , Json.object [("hash", Json.text sri), ("method", Json.text "flat")]
+      )
+    ]
+
 -- Derivation JSON, schema version 4 (Nix 2.35). Deps are
--- (drvPath, outputName) pairs.
-unix.drvJson : Text -> Text -> [(Text, Text)] -> Text
-unix.drvJson name script depDrvs =
+-- (drvPath, outputName) pairs. outEnv is $out as the builder sees
+-- it: a floating-CA placeholder, or "" for fixed outputs -- the
+-- daemon replaces "" with the computed path on `derivation add`.
+unix.drvJson' : Text -> Text -> [(Text, Text)] -> Text -> Json -> Text
+unix.drvJson' name script depDrvs outEnv outputsJson =
   inputDrv = p -> match p with
     (drvPath, outName) ->
       ( Text.drop 11 drvPath
@@ -92,7 +120,7 @@ unix.drvJson name script depDrvs =
         , Json.object
             [ ("builder", Json.text "/bin/sh")
             , ("name", Json.text name)
-            , ("out", Json.text (unix.placeholder "out"))
+            , ("out", Json.text outEnv)
             , ("system", Json.text unix.system)
             ]
         )
@@ -103,19 +131,14 @@ unix.drvJson name script depDrvs =
             ]
         )
       , ("name", Json.text name)
-      , ( "outputs"
-        , Json.object
-            [ ( "out"
-              , Json.object
-                  [ ("hashAlgo", Json.text "sha256")
-                  , ("method", Json.text "nar")
-                  ]
-              )
-            ]
-        )
+      , ("outputs", outputsJson)
       , ("system", Json.text unix.system)
       , ("version", Json.nat 4)
       ])
+
+unix.drvJson : Text -> Text -> [(Text, Text)] -> Text
+unix.drvJson name script depDrvs =
+  unix.drvJson' name script depDrvs (unix.placeholder "out") unix.caOutputs
 
 -- ----------------------------------------------------------------
 -- Talking to Nix.
@@ -168,6 +191,29 @@ unix.evalNixpkgs attr =
       Exception.raise
         (Generic.failure ("unexpected eval output for " ++ attr) ())
 
+-- Realise a source fetch as a fixed-output derivation. curl and
+-- CA certs come from nixpkgs. The output path is fixed by the SRI
+-- hash alone; we read it back from the daemon instead of
+-- implementing store-path hashing.
+unix.fetch : Text -> Text -> Text -> {IO, Exception} (Text, Text)
+unix.fetch name url sri =
+  (curlDrv, curlOut, curlOutName) = unix.evalNixpkgs "curl"
+  (certDrv, certOut, certOutName) = unix.evalNixpkgs "cacert"
+  script =
+    "export SSL_CERT_FILE=" ++ certOut ++ "/etc/ssl/certs/ca-bundle.crt; "
+      ++ curlOut ++ "/bin/curl --fail --location --output \"$out\" " ++ url
+  drvPath =
+    unix.addDrv
+      (unix.drvJson'
+        name
+        script
+        [(curlDrv, curlOutName), (certDrv, certOutName)]
+        ""
+        (unix.fixedOutputs sri))
+  outPath =
+    unix.chomp (unix.exec "nix-store" ["--query", "--outputs", drvPath] "")
+  (drvPath, outPath)
+
 unix.assoc.lookup : Text -> [(Text, a)] -> Optional a
 unix.assoc.lookup k xs = match xs with
   [] -> None
@@ -202,6 +248,10 @@ unix.realise.go cache pkg = match pkg with
               (drvPath, outPath, outName) = unix.evalNixpkgs attr
               printLine ("  nixpkgs " ++ attr ++ " -> " ++ drvPath)
               (c, resolved :+ (attr, drvPath, outName, outPath))
+            unix.Dep.Fetch fname url sri ->
+              (drvPath, outPath) = unix.fetch fname url sri
+              printLine ("  fetch " ++ fname ++ " -> " ++ drvPath)
+              (c, resolved :+ (fname, drvPath, "out", outPath))
         (cache2, resolvedDeps) = List.foldLeft step (cache, []) deps
         subst = s -> info -> match info with
           (depName, _, _, sub) ->
@@ -244,11 +294,42 @@ pkgs.shout =
     , unix.Dep.Local pkgs.banner
     ]
 
+-- The milestone: compile GNU hello 2.12.1 from the upstream
+-- tarball. nixpkgs ships 2.12.3, so this is not a replay -- the
+-- source fetch and build are ours. Toolchain from nixpkgs.
+pkgs.gnuhello : unix.Pkg
+pkgs.gnuhello =
+  script =
+    Text.join
+      "\n"
+      [ "set -e"
+      , "export PATH=@bash@/bin:@coreutils@/bin:@gnugrep@/bin:@gnused@/bin:@gawk@/bin:@gnutar@/bin:@gzip@/bin:@gnumake@/bin:@gcc@/bin:@gettext@/bin"
+      , "export SHELL=@bash@/bin/bash"
+      , "tar xzf @hello-src@"
+      , "cd hello-2.12.1"
+      , "./configure --prefix=$out"
+      , "make"
+      , "make install"
+      ]
+  toolchain =
+    List.map
+      unix.Dep.Nixpkgs
+      [ "bash", "coreutils", "gnugrep", "gnused", "gawk", "gnutar"
+      , "gzip", "gnumake", "gcc", "gettext"
+      ]
+  src =
+    unix.Dep.Fetch
+      "hello-src"
+      "https://ftp.gnu.org/gnu/hello/hello-2.12.1.tar.gz"
+      "sha256-jZkUKv2SV28wsM18tCqNxoCZmLxdYH2Idh9RLibH2yA="
+  unix.Pkg.Pkg "hello-2.12.1" script (src +: toolchain)
+
 pkgs.registry : [(Text, unix.Pkg)]
 pkgs.registry =
   [ ("greeting", pkgs.greeting)
   , ("banner", pkgs.banner)
   , ("shout", pkgs.shout)
+  , ("hello", pkgs.gnuhello)
   ]
 
 -- ----------------------------------------------------------------

@@ -69,6 +69,39 @@ a Unison value (eval-free at use time), or import whole drv closures
 as typed Unison values so overrides become pure `Drv -> Drv`
 functions.
 
+## Building from source: it works too
+
+```
+$ ./run.sh hello
+realising hello ...
+  fetch hello-src -> /nix/store/1ym6np23...-hello-src.drv
+  nixpkgs bash -> ...
+  nixpkgs gcc -> /nix/store/q78xs1xf...-gcc-wrapper-15.2.0.drv
+  drv hello-2.12.1 -> /nix/store/mkzadvdf...-hello-2.12.1.drv
+building ...
+out: /nix/store/j1a0vfqx...-hello-2.12.1
+
+$ /nix/store/j1a0vfqx...-hello-2.12.1/bin/hello --version
+hello (GNU Hello) 2.12.1
+```
+
+GNU hello 2.12.1, compiled from the upstream tarball with the
+nixpkgs toolchain. nixpkgs ships 2.12.3, so this is not a replay:
+the fetch and the build are defined in Unison.
+
+Source fetching is a `Fetch name url sriHash` dependency. It
+becomes a fixed-output derivation: curl and CA certs come from
+nixpkgs, the sandbox gets network, the daemon checks the SRI hash.
+Two facts make it cheap:
+
+- `nix derivation add` replaces an empty `out` env var with the
+  computed fixed output path. We read the path back with
+  `nix-store --query --outputs`. Store-path hashing stays out of
+  the frontend.
+- Fixed output paths are universal. Any binary cache that has the
+  tarball (e.g. via nixpkgs' own fetch of the same file) can
+  substitute it.
+
 ## How it works
 
 ```
@@ -143,11 +176,11 @@ is needed.
 - One output (`out`) per local package. Multi-output needs more
   placeholder plumbing, not new ideas. Nixpkgs deps already carry
   their real output name.
-- No fixed-output derivations of our own yet. Sources can come in
-  through nixpkgs fetchers for now.
 - Nixpkgs deps eval one attribute per `nix eval` call, at realise
   time. A pinned, batch-evaluated index (e.g. via nix-eval-jobs)
   would make use time eval-free.
+- `./run.sh hello` re-evals its ten toolchain attrs on every run.
+  Same fix as above.
 - The build script DSL (`@dep@` substitution) is a placeholder for a
   real typed builder API.
 - `nix derivation add` and `nix build` are spawned as processes. A
