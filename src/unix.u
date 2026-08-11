@@ -98,47 +98,86 @@ unix.fixedOutputs sri =
       )
     ]
 
--- Derivation JSON, schema version 4 (Nix 2.35). Deps are
--- (drvPath, outputName) pairs. outEnv is $out as the builder sees
--- it: a floating-CA placeholder, or "" for fixed outputs -- the
--- daemon replaces "" with the computed path on `derivation add`.
-unix.drvJson' : Text -> Text -> [(Text, Text)] -> Text -> Json -> Text
-unix.drvJson' name script depDrvs outEnv outputsJson =
-  inputDrv = p -> match p with
+-- Group (drvPath, outputName) pairs by drvPath so the same .drv
+-- never appears twice in inputs.drvs.
+unix.groupDeps : [(Text, Text)] -> [(Text, [Text])]
+unix.groupDeps ps =
+  add = acc -> p -> match p with
     (drvPath, outName) ->
+      match unix.assoc.lookup drvPath acc with
+        Some outs ->
+          if List.any (o -> o Text.== outName) outs then acc
+          else
+            List.map
+              (q -> match q with
+                (k, v) -> if k == drvPath then (k, v :+ outName) else (k, v))
+              acc
+        None -> acc :+ (drvPath, [outName])
+  List.foldLeft add [] ps
+
+-- With structured attrs the daemon does not export env vars. The
+-- builder reads .attrs.sh instead. This prelude defines $out (and
+-- any future outputs) for the package script. Needs bash: .attrs.sh
+-- uses declare -A, which busybox sh cannot parse.
+unix.attrsPrelude : Text
+unix.attrsPrelude =
+  Text.join
+    "\n"
+    [ ". \"$NIX_ATTRS_SH_FILE\""
+    , "for o in \"${!outputs[@]}\"; do export \"$o=${outputs[$o]}\"; done"
+    , ""
+    ]
+
+-- Derivation JSON, schema version 4 (Nix 2.35). Structured attrs
+-- out of the box: env carries only the output paths, everything
+-- else lives in structuredAttrs / the .attrs files. Deps are
+-- (drvPath, outputName) pairs. outEnv is $out as stored in env: a
+-- floating-CA placeholder, or "" for fixed outputs -- the daemon
+-- replaces "" with the computed path on `derivation add`.
+unix.drvJson' : Text -> Text -> Text -> [(Text, Text)] -> Text -> Json -> Text
+unix.drvJson' name builder script depDrvs outEnv outputsJson =
+  inputDrv = p -> match p with
+    (drvPath, outNames) ->
       ( Text.drop 11 drvPath
       , Json.object
           [ ("dynamicOutputs", Json.object [])
-          , ("outputs", Json.array [Json.text outName])
+          , ("outputs", Json.array (List.map Json.text outNames))
           ]
       )
   Json.toText
     (Json.object
-      [ ("args", Json.array [Json.text "-c", Json.text script])
-      , ("builder", Json.text "/bin/sh")
-      , ( "env"
-        , Json.object
-            [ ("builder", Json.text "/bin/sh")
-            , ("name", Json.text name)
-            , ("out", Json.text outEnv)
-            , ("system", Json.text unix.system)
-            ]
+      [ ( "args"
+        , Json.array
+            [Json.text "-c", Json.text (unix.attrsPrelude ++ script)]
         )
+      , ("builder", Json.text builder)
+      , ("env", Json.object [("out", Json.text outEnv)])
       , ( "inputs"
         , Json.object
-            [ ("drvs", Json.object (List.map inputDrv depDrvs))
+            [ ( "drvs"
+              , Json.object (List.map inputDrv (unix.groupDeps depDrvs))
+              )
             , ("srcs", Json.array [])
             ]
         )
       , ("name", Json.text name)
       , ("outputs", outputsJson)
+      , ( "structuredAttrs"
+        , Json.object
+            [ ("builder", Json.text builder)
+            , ("name", Json.text name)
+            , ("outputs", Json.array [Json.text "out"])
+            , ("system", Json.text unix.system)
+            ]
+        )
       , ("system", Json.text unix.system)
       , ("version", Json.nat 4)
       ])
 
-unix.drvJson : Text -> Text -> [(Text, Text)] -> Text
-unix.drvJson name script depDrvs =
-  unix.drvJson' name script depDrvs (unix.placeholder "out") unix.caOutputs
+unix.drvJson : Text -> Text -> Text -> [(Text, Text)] -> Text
+unix.drvJson name builder script depDrvs =
+  unix.drvJson' name builder script depDrvs (unix.placeholder "out")
+    unix.caOutputs
 
 -- ----------------------------------------------------------------
 -- Talking to Nix.
@@ -197,6 +236,7 @@ unix.evalNixpkgs attr =
 -- implementing store-path hashing.
 unix.fetch : Text -> Text -> Text -> {IO, Exception} (Text, Text)
 unix.fetch name url sri =
+  (bashDrv, bashOut, bashOutName) = unix.evalNixpkgs "bash"
   (curlDrv, curlOut, curlOutName) = unix.evalNixpkgs "curl"
   (certDrv, certOut, certOutName) = unix.evalNixpkgs "cacert"
   script =
@@ -206,8 +246,12 @@ unix.fetch name url sri =
     unix.addDrv
       (unix.drvJson'
         name
+        (bashOut ++ "/bin/bash")
         script
-        [(curlDrv, curlOutName), (certDrv, certOutName)]
+        [ (bashDrv, bashOutName)
+        , (curlDrv, curlOutName)
+        , (certDrv, certOutName)
+        ]
         ""
         (unix.fixedOutputs sri))
   outPath =
@@ -259,9 +303,11 @@ unix.realise.go cache pkg = match pkg with
         script' = List.foldLeft subst script resolvedDeps
         depDrv = info -> match info with
           (_, drvPath, outName, _) -> (drvPath, outName)
+        (bashDrv, bashOut, bashOutName) = unix.evalNixpkgs "bash"
+        depDrvs = List.map depDrv resolvedDeps :+ (bashDrv, bashOutName)
         drvPath =
           unix.addDrv
-            (unix.drvJson name script' (List.map depDrv resolvedDeps))
+            (unix.drvJson name (bashOut ++ "/bin/bash") script' depDrvs)
         printLine ("  drv " ++ name ++ " -> " ++ drvPath)
         (cache2 :+ (name, drvPath), drvPath)
 

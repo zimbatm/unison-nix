@@ -132,6 +132,16 @@ in [nixos/nix](https://github.com/NixOS/nix).
 derivation to the store once. It substitutes `@depname@` tokens in
 build scripts with upstream placeholders.
 
+Generated derivations use structured attrs out of the box. `env`
+carries only the output paths; everything else lives in
+`structuredAttrs` and reaches the builder as `.attrs.json` /
+`.attrs.sh`. Consequence: the daemon exports no env vars, so every
+derivation builds with nixpkgs `bash` and a two-line prelude that
+sources `.attrs.sh` and exports the outputs. Package scripts keep
+using `$out`. The sandbox `/bin/sh` (busybox ash) cannot parse
+`.attrs.sh` (`declare -A`), which is why the builder must be real
+bash.
+
 ## Layout
 
 - `src/unix.u` — the whole spike. Base32, placeholders, derivation
@@ -199,9 +209,13 @@ is needed.
    for encoding.
 4. Gotcha: multi-line lambda bodies need `x -> let`; the body must
    otherwise start on the same line as `->`.
-5. Gotcha: the build sandbox has `/bin/sh` but no coreutils. Scripts
-   must use shell builtins — or depend on nixpkgs `coreutils`, which
-   removes the problem.
+5. Gotcha: the sandbox `/bin/sh` is busybox ash with builtins only.
+   It cannot source `.attrs.sh`. Structured attrs therefore require
+   a real bash as the builder; nixpkgs supplies it.
 6. Mixed graphs work: a floating CA derivation may list
    input-addressed nixpkgs derivations in `inputs.drvs`. No
    bootstrap chain is needed; nixpkgs is reachable from day one.
+7. Floating CA gives early cutoff for free: switching every drv to
+   structured attrs changed all drv hashes, but `shout` and
+   `hello-2.12.1` rebuilt to byte-identical outputs and kept their
+   store paths.
