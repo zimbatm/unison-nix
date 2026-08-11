@@ -1,0 +1,237 @@
+-- unix: Unison as a frontend to Nix.
+--
+-- Packages are plain Unison values. We compute Nix derivations as
+-- JSON, feed them to `nix derivation add`, and build the returned
+-- .drv path with `nix build`. The Nix expression language is never
+-- involved.
+--
+-- All outputs are floating content-addressed (ca-derivations). The
+-- daemon computes output paths, so we never implement Nix's store
+-- path hashing. We only need two placeholder hashes, verified
+-- against Nix 2.35:
+--   own output:  nixbase32(sha256("nix-output:<output>"))
+--   dep output:  nixbase32(sha256("nix-upstream-output:<drvhash>:<name>"))
+
+-- ----------------------------------------------------------------
+-- Nix base32. Not RFC 4648: custom alphabet, bits read in reverse.
+
+unix.base32.alphabet : [Char]
+unix.base32.alphabet = Text.toCharList "0123456789abcdfghijklmnpqrsvwxyz"
+
+unix.base32.encode : Bytes -> Text
+unix.base32.encode bs =
+  n = Bytes.size bs
+  byte = j -> Optional.getOrElse 0 (Bytes.at j bs)
+  len = Nat.diff (n * 8) 1 / 5 + 1
+  charFor = i -> let
+    b = i * 5
+    j = b / 8
+    bit = mod b 8
+    hi = if j + 1 < n then Nat.shiftLeft (byte (j + 1)) (Nat.diff 8 bit) else 0
+    c = Nat.and (Nat.or (Nat.shiftRight (byte j) bit) hi) 31
+    Optional.getOrElse ?0 (List.at c unix.base32.alphabet)
+  List.range 0 len
+    |> List.map charFor
+    |> List.reverse
+    |> Text.fromCharList
+
+unix.sha256 : Text -> Bytes
+unix.sha256 t =
+  crypto.hashBytes crypto.HashAlgorithm.Sha2_256 (Text.toUtf8 t)
+
+-- Placeholder for one of our own outputs ($out in build scripts).
+unix.placeholder : Text -> Text
+unix.placeholder output =
+  "/" ++ unix.base32.encode (unix.sha256 ("nix-output:" ++ output))
+
+-- Placeholder for the output of a dependency .drv. Nix rewrites it
+-- to the real store path once the dependency is built.
+unix.upstreamPlaceholder : Text -> Text -> Text
+unix.upstreamPlaceholder drvPath output =
+  hashPart = Text.take 32 (Text.drop 11 drvPath)
+  base = Text.drop 44 drvPath
+  drvName = Text.take (Nat.diff (Text.size base) 4) base
+  refName = if output == "out" then drvName else drvName ++ "-" ++ output
+  "/" ++ unix.base32.encode
+    (unix.sha256 ("nix-upstream-output:" ++ hashPart ++ ":" ++ refName))
+
+-- ----------------------------------------------------------------
+-- The package model. This is the whole "language": a package is a
+-- name, a shell script, and other packages it depends on. Scripts
+-- refer to a dependency's output as @depname@.
+
+type unix.Pkg = { name : Text, script : Text, deps : [unix.Pkg] }
+
+unix.system : Text
+unix.system = "x86_64-linux"
+
+-- Derivation JSON, schema version 4 (Nix 2.35).
+unix.drvJson : Text -> Text -> [Text] -> Text
+unix.drvJson name script depDrvPaths =
+  inputDrv = p -> let
+    ( Text.drop 11 p
+    , Json.object
+        [ ("dynamicOutputs", Json.object [])
+        , ("outputs", Json.array [Json.text "out"])
+        ]
+    )
+  Json.toText
+    (Json.object
+      [ ("args", Json.array [Json.text "-c", Json.text script])
+      , ("builder", Json.text "/bin/sh")
+      , ( "env"
+        , Json.object
+            [ ("builder", Json.text "/bin/sh")
+            , ("name", Json.text name)
+            , ("out", Json.text (unix.placeholder "out"))
+            , ("system", Json.text unix.system)
+            ]
+        )
+      , ( "inputs"
+        , Json.object
+            [ ("drvs", Json.object (List.map inputDrv depDrvPaths))
+            , ("srcs", Json.array [])
+            ]
+        )
+      , ("name", Json.text name)
+      , ( "outputs"
+        , Json.object
+            [ ( "out"
+              , Json.object
+                  [ ("hashAlgo", Json.text "sha256")
+                  , ("method", Json.text "nar")
+                  ]
+              )
+            ]
+        )
+      , ("system", Json.text unix.system)
+      , ("version", Json.nat 4)
+      ])
+
+-- ----------------------------------------------------------------
+-- Talking to Nix.
+
+unix.exec : Text -> [Text] -> Text -> {IO, Exception} Text
+unix.exec cmd args input =
+  (stdin, stdout, stderr, proc) = IO.Process.start cmd args
+  Handle.putText stdin input
+  Handle.close stdin
+  out = Handle.getText stdout
+  err = Handle.getText stderr
+  code = IO.Process.wait proc
+  match code with
+    0 -> out
+    _ ->
+      Exception.raise
+        (Generic.failure
+          ("exec failed (" ++ Nat.toText code ++ "): " ++ cmd ++ " "
+            ++ Text.join " " args ++ "\n" ++ err)
+          ())
+
+unix.nix : [Text] -> Text -> {IO, Exception} Text
+unix.nix args input =
+  unix.exec
+    "nix"
+    (["--extra-experimental-features", "nix-command ca-derivations"] ++ args)
+    input
+
+unix.chomp : Text -> Text
+unix.chomp = Text.replaceAll "\n" ""
+
+unix.addDrv : Text -> {IO, Exception} Text
+unix.addDrv j = unix.chomp (unix.nix ["derivation", "add"] j)
+
+unix.assoc.lookup : Text -> [(Text, a)] -> Optional a
+unix.assoc.lookup k xs = match xs with
+  [] -> None
+  (k2, v) +: rest ->
+    if k == k2 then Some v else unix.assoc.lookup k rest
+
+-- ----------------------------------------------------------------
+-- Realisation: walk the graph depth-first, add each derivation to
+-- the store once, substitute upstream placeholders into scripts.
+
+unix.realise : unix.Pkg -> {IO, Exception} Text
+unix.realise pkg = at2 (unix.realise.go [] pkg)
+
+unix.realise.go :
+  [(Text, Text)] -> unix.Pkg -> {IO, Exception} ([(Text, Text)], Text)
+unix.realise.go cache pkg = match pkg with
+  unix.Pkg.Pkg name script deps ->
+    match unix.assoc.lookup name cache with
+      Some path -> (cache, path)
+      None ->
+        step = acc -> dep -> match acc with
+          (c, resolved) ->
+            (c2, p) = unix.realise.go c dep
+            (c2, resolved :+ (Pkg.name dep, p))
+        (cache2, resolvedDeps) = List.foldLeft step (cache, []) deps
+        subst = s -> kv -> match kv with
+          (depName, depPath) ->
+            Text.replaceAll
+              ("@" ++ depName ++ "@")
+              (unix.upstreamPlaceholder depPath "out")
+              s
+        script' = List.foldLeft subst script resolvedDeps
+        drvPath =
+          unix.addDrv (unix.drvJson name script' (List.map at2 resolvedDeps))
+        printLine ("  drv " ++ name ++ " -> " ++ drvPath)
+        (cache2 :+ (name, drvPath), drvPath)
+
+-- ----------------------------------------------------------------
+-- A tiny package set.
+
+pkgs.greeting : unix.Pkg
+pkgs.greeting =
+  unix.Pkg.Pkg
+    "greeting"
+    "echo hello from the unison frontend > $out"
+    []
+
+pkgs.banner : unix.Pkg
+pkgs.banner =
+  unix.Pkg.Pkg
+    "banner"
+    "read -r line < @greeting@; { echo \"$line\"; echo this is nix without nixexpr; } > $out"
+    [pkgs.greeting]
+
+pkgs.registry : [(Text, unix.Pkg)]
+pkgs.registry = [("greeting", pkgs.greeting), ("banner", pkgs.banner)]
+
+-- ----------------------------------------------------------------
+-- Entry points.
+
+unix.test.main : '{IO, Exception} ()
+unix.test.main = do
+  expectOut = "/1rz4g4znpzjwh1xymhjpm42vipw92pr73vdgl6xs1hycac8kf2n9"
+  gotOut = unix.placeholder "out"
+  expectUp = "/06vf5fh13wskpg2pr3wdh7r95xhyx1j9sp8y3qga3b1qlpbjpq49"
+  gotUp =
+    unix.upstreamPlaceholder
+      "/nix/store/b9mn5w3x4p2mi9y5344pfykak46f71ys-dep-a.drv" "out"
+  check = label -> expect -> got -> let
+    if expect == (got : Text)
+      then printLine (label ++ ": ok")
+      else printLine (label ++ ": FAIL got " ++ got)
+  check "own-output placeholder" expectOut gotOut
+  check "upstream placeholder" expectUp gotUp
+
+unix.main : '{IO, Exception} ()
+unix.main = do
+  match !IO.getArgs with
+    [pkgName] ->
+      match unix.assoc.lookup pkgName pkgs.registry with
+        Some pkg ->
+          printLine ("realising " ++ pkgName ++ " ...")
+          drv = unix.realise pkg
+          printLine ("building " ++ drv ++ " ...")
+          out =
+            unix.nix
+              ["build", "--no-link", "--print-out-paths", drv ++ "^out"]
+              ""
+          printLine ("out: " ++ unix.chomp out)
+        None ->
+          printLine
+            ("unknown package: " ++ pkgName ++ " (known: "
+              ++ Text.join ", " (List.map at1 pkgs.registry) ++ ")")
+    _ -> printLine "usage: unix <package>"
