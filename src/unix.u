@@ -57,24 +57,33 @@ unix.upstreamPlaceholder drvPath output =
 
 -- ----------------------------------------------------------------
 -- The package model. This is the whole "language": a package is a
--- name, a shell script, and other packages it depends on. Scripts
--- refer to a dependency's output as @depname@.
+-- name, a shell script, and dependencies. A dependency is either
+-- another Pkg or a nixpkgs attribute. Scripts refer to a
+-- dependency's output as @depname@ / @attr@.
+--
+-- Nixpkgs deps work because their derivations are input-addressed:
+-- output paths are fixed at eval time, so we splice the literal
+-- store path and list the .drv in inputs. No placeholder needed.
 
-type unix.Pkg = { name : Text, script : Text, deps : [unix.Pkg] }
+type unix.Dep = Local unix.Pkg | Nixpkgs Text
+
+type unix.Pkg = { name : Text, script : Text, deps : [unix.Dep] }
 
 unix.system : Text
 unix.system = "x86_64-linux"
 
--- Derivation JSON, schema version 4 (Nix 2.35).
-unix.drvJson : Text -> Text -> [Text] -> Text
-unix.drvJson name script depDrvPaths =
-  inputDrv = p -> let
-    ( Text.drop 11 p
-    , Json.object
-        [ ("dynamicOutputs", Json.object [])
-        , ("outputs", Json.array [Json.text "out"])
-        ]
-    )
+-- Derivation JSON, schema version 4 (Nix 2.35). Deps are
+-- (drvPath, outputName) pairs.
+unix.drvJson : Text -> Text -> [(Text, Text)] -> Text
+unix.drvJson name script depDrvs =
+  inputDrv = p -> match p with
+    (drvPath, outName) ->
+      ( Text.drop 11 drvPath
+      , Json.object
+          [ ("dynamicOutputs", Json.object [])
+          , ("outputs", Json.array [Json.text outName])
+          ]
+      )
   Json.toText
     (Json.object
       [ ("args", Json.array [Json.text "-c", Json.text script])
@@ -89,7 +98,7 @@ unix.drvJson name script depDrvPaths =
         )
       , ( "inputs"
         , Json.object
-            [ ("drvs", Json.object (List.map inputDrv depDrvPaths))
+            [ ("drvs", Json.object (List.map inputDrv depDrvs))
             , ("srcs", Json.array [])
             ]
         )
@@ -141,6 +150,24 @@ unix.chomp = Text.replaceAll "\n" ""
 unix.addDrv : Text -> {IO, Exception} Text
 unix.addDrv j = unix.chomp (unix.nix ["derivation", "add"] j)
 
+-- Ask the Nix evaluator for one nixpkgs attribute. One call returns
+-- drv path, output path, and output name. Forcing drvPath also
+-- writes the .drv into the store. The Nix language runs here, but
+-- only as an importer -- like `guix import`.
+unix.evalNixpkgs : Text -> {IO, Exception} (Text, Text, Text)
+unix.evalNixpkgs attr =
+  out =
+    unix.nix
+      [ "eval", "--raw", "nixpkgs#" ++ attr
+      , "--apply", "p: \"${p.drvPath}\\n${p.outPath}\\n${p.outputName}\""
+      ]
+      ""
+  match Text.split ?\n out with
+    [drvPath, outPath, outName] -> (drvPath, outPath, outName)
+    _ ->
+      Exception.raise
+        (Generic.failure ("unexpected eval output for " ++ attr) ())
+
 unix.assoc.lookup : Text -> [(Text, a)] -> Optional a
 unix.assoc.lookup k xs = match xs with
   [] -> None
@@ -149,7 +176,11 @@ unix.assoc.lookup k xs = match xs with
 
 -- ----------------------------------------------------------------
 -- Realisation: walk the graph depth-first, add each derivation to
--- the store once, substitute upstream placeholders into scripts.
+-- the store once, substitute output references into scripts. Local
+-- deps get a floating-CA upstream placeholder. Nixpkgs deps get
+-- their literal (input-addressed) output path.
+--
+-- A resolved dep is (name, drvPath, outputName, substText).
 
 unix.realise : unix.Pkg -> {IO, Exception} Text
 unix.realise pkg = at2 (unix.realise.go [] pkg)
@@ -162,19 +193,25 @@ unix.realise.go cache pkg = match pkg with
       Some path -> (cache, path)
       None ->
         step = acc -> dep -> match acc with
-          (c, resolved) ->
-            (c2, p) = unix.realise.go c dep
-            (c2, resolved :+ (Pkg.name dep, p))
+          (c, resolved) -> match dep with
+            unix.Dep.Local p ->
+              (c2, drvPath) = unix.realise.go c p
+              sub = unix.upstreamPlaceholder drvPath "out"
+              (c2, resolved :+ (unix.Pkg.name p, drvPath, "out", sub))
+            unix.Dep.Nixpkgs attr ->
+              (drvPath, outPath, outName) = unix.evalNixpkgs attr
+              printLine ("  nixpkgs " ++ attr ++ " -> " ++ drvPath)
+              (c, resolved :+ (attr, drvPath, outName, outPath))
         (cache2, resolvedDeps) = List.foldLeft step (cache, []) deps
-        subst = s -> kv -> match kv with
-          (depName, depPath) ->
-            Text.replaceAll
-              ("@" ++ depName ++ "@")
-              (unix.upstreamPlaceholder depPath "out")
-              s
+        subst = s -> info -> match info with
+          (depName, _, _, sub) ->
+            Text.replaceAll ("@" ++ depName ++ "@") sub s
         script' = List.foldLeft subst script resolvedDeps
+        depDrv = info -> match info with
+          (_, drvPath, outName, _) -> (drvPath, outName)
         drvPath =
-          unix.addDrv (unix.drvJson name script' (List.map at2 resolvedDeps))
+          unix.addDrv
+            (unix.drvJson name script' (List.map depDrv resolvedDeps))
         printLine ("  drv " ++ name ++ " -> " ++ drvPath)
         (cache2 :+ (name, drvPath), drvPath)
 
@@ -193,10 +230,26 @@ pkgs.banner =
   unix.Pkg.Pkg
     "banner"
     "read -r line < @greeting@; { echo \"$line\"; echo this is nix without nixexpr; } > $out"
-    [pkgs.greeting]
+    [unix.Dep.Local pkgs.greeting]
+
+-- Uses real nixpkgs packages: hello from the binary cache, tr from
+-- coreutils. Mixes a local CA dep (banner) with nixpkgs deps.
+pkgs.shout : unix.Pkg
+pkgs.shout =
+  unix.Pkg.Pkg
+    "shout"
+    "{ @hello@/bin/hello; @coreutils@/bin/tr a-z A-Z < @banner@; } > $out"
+    [ unix.Dep.Nixpkgs "hello"
+    , unix.Dep.Nixpkgs "coreutils"
+    , unix.Dep.Local pkgs.banner
+    ]
 
 pkgs.registry : [(Text, unix.Pkg)]
-pkgs.registry = [("greeting", pkgs.greeting), ("banner", pkgs.banner)]
+pkgs.registry =
+  [ ("greeting", pkgs.greeting)
+  , ("banner", pkgs.banner)
+  , ("shout", pkgs.shout)
+  ]
 
 -- ----------------------------------------------------------------
 -- Entry points.

@@ -23,6 +23,52 @@ this is nix without nixexpr
 `banner` depends on `greeting`. Both are plain Unison values. No Nix
 expression is evaluated at any point.
 
+## Nixpkgs interop: it also works
+
+```
+$ ./run.sh shout
+realising shout ...
+  nixpkgs hello -> /nix/store/vvjw1pyn.....-hello-2.12.3.drv
+  nixpkgs coreutils -> /nix/store/nvmwza7l...-coreutils-9.11.drv
+  drv greeting -> /nix/store/g9d2vsnj...-greeting.drv
+  drv banner -> /nix/store/1lmk1p3y...-banner.drv
+  drv shout -> /nix/store/kf4dsxlj...-shout.drv
+building /nix/store/kf4dsxlj...-shout.drv ...
+out: /nix/store/1fjn12k4...-shout
+
+$ cat /nix/store/1fjn12k4...-shout
+Hello, world!
+HELLO FROM THE UNISON FRONTEND
+THIS IS NIX WITHOUT NIXEXPR
+```
+
+`shout` depends on nixpkgs `hello` and `coreutils`, plus the local
+`banner`. The nixpkgs outputs come from the binary cache. This is
+the big advantage over the Guix road: we keep the store format, so
+we inherit all of nixpkgs and cache.nixos.org.
+
+It works because nixpkgs derivations are input-addressed: their
+output paths are fixed at eval time. The frontend asks the Nix
+evaluator for one attribute:
+
+```
+nix eval --raw nixpkgs#<attr> \
+  --apply 'p: "${p.drvPath}\n${p.outPath}\n${p.outputName}"'
+```
+
+One call returns everything, and forcing `drvPath` writes the .drv
+into the store. The frontend lists the .drv in `inputs.drvs` and
+splices the literal output path into the script. No placeholder is
+needed for this direction. A floating CA derivation may depend on
+input-addressed derivations; the daemon accepts the mixed graph.
+
+The Nix language still runs here, but demoted to an import oracle —
+the role Scheme gives `guix import`. Next refinements on the same
+seam: eval a pinned index once per nixpkgs revision and store it as
+a Unison value (eval-free at use time), or import whole drv closures
+as typed Unison values so overrides become pure `Drv -> Drv`
+functions.
+
 ## How it works
 
 ```
@@ -56,7 +102,8 @@ build scripts with upstream placeholders.
 ## Layout
 
 - `src/unix.u` — the whole spike. Base32, placeholders, derivation
-  JSON, process handling, graph realisation, a demo package set.
+  JSON, process handling, nixpkgs eval, graph realisation, a demo
+  package set.
 - `setup.md` — UCM transcript. It creates the codebase and installs
   `@unison/base` and `@unison/json`.
 - `run.sh` — bootstraps the codebase on first run, then runs
@@ -70,6 +117,7 @@ nix develop          # or: nix shell nixpkgs#unison-ucm
 ./run.sh test        # verify placeholder hashes against Nix
 ./run.sh greeting    # build a leaf package
 ./run.sh banner      # build a package with a dependency
+./run.sh shout       # build a package with nixpkgs dependencies
 ```
 
 Requires Nix 2.35+ with a daemon. The `ca-derivations` and
@@ -92,12 +140,14 @@ is needed.
 ## Limitations (spike scope)
 
 - `system` is hardcoded to `x86_64-linux`.
-- One output (`out`) per package. Multi-output needs more
-  placeholder plumbing, not new ideas.
-- Builder is `/bin/sh` with sandbox builtins only. Real packages
-  need a bootstrap toolchain (fixed-output derivations for fetching,
-  then a busybox/stdenv chain — same road Guix walked).
-- No fixed-output derivations yet, so no source fetching.
+- One output (`out`) per local package. Multi-output needs more
+  placeholder plumbing, not new ideas. Nixpkgs deps already carry
+  their real output name.
+- No fixed-output derivations of our own yet. Sources can come in
+  through nixpkgs fetchers for now.
+- Nixpkgs deps eval one attribute per `nix eval` call, at realise
+  time. A pinned, batch-evaluated index (e.g. via nix-eval-jobs)
+  would make use time eval-free.
 - The build script DSL (`@dep@` substitution) is a placeholder for a
   real typed builder API.
 - `nix derivation add` and `nix build` are spawned as processes. A
@@ -117,4 +167,8 @@ is needed.
 4. Gotcha: multi-line lambda bodies need `x -> let`; the body must
    otherwise start on the same line as `->`.
 5. Gotcha: the build sandbox has `/bin/sh` but no coreutils. Scripts
-   must use shell builtins until a toolchain is bootstrapped.
+   must use shell builtins — or depend on nixpkgs `coreutils`, which
+   removes the problem.
+6. Mixed graphs work: a floating CA derivation may list
+   input-addressed nixpkgs derivations in `inputs.drvs`. No
+   bootstrap chain is needed; nixpkgs is reachable from day one.
