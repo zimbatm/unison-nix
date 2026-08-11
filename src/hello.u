@@ -1,2 +1,0 @@
-hello.main : '{IO, Exception} ()
-hello.main = do printLine "hello from unison"
