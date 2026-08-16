@@ -28,7 +28,7 @@ fi
 cache=.ucm-compiled
 # Load order: a file may only reference what earlier files (or the
 # generated index) already put in the codebase.
-sources="src/upkg/00-core.u src/upkg/01-model.u src/upkg/02-index.u src/upkg/03-ship.u src/upkg/04-plan.u src/upkg/05-drv.u src/upkg/06-cargo.u src/upkg/07-builders.u src/upkg/08-claims.u src/pkgs.u src/site.u"
+sources="src/upkg/00-core.u src/upkg/01-model.u src/upkg/02-index.u src/upkg/03-ship.u src/upkg/04-plan.u src/upkg/05-drv.u src/upkg/06-cargo.u src/upkg/07-builders.u src/upkg/08-claims.u src/upkg/09-release.u src/pkgs.u src/site.u"
 cur=$(cat $sources src/nixpkgs-index.u | sha256sum | cut -d' ' -f1)
 if [ ! -f "$cache/upkg.uc" ] || [ "$(cat "$cache/stamp" 2>/dev/null)" != "$cur" ]; then
   echo "Compiling frontend ..." >&2

@@ -147,6 +147,43 @@ site.dispatch args =
           ["build", "--no-link", "--print-out-paths", newRoot ++ "^out"]
           ""
       printLine ("out: " ++ upkg.chomp out)
+    ["release"] ->
+      mk = label -> build -> test -> upkg.Check.Check label build test
+      -- the curated constituents, each with a smoke test on its output
+      curated =
+        [ mk "greeting says hello" (do upkg.realise pkgs.greeting)
+            "grep -q hello $out"
+        , mk "banner has both lines" (do upkg.realise pkgs.banner)
+            "grep -q nixexpr $out"
+        , mk "shout is uppercase" (do upkg.realise pkgs.shout)
+            "grep -q HELLO $out"
+        , mk "motd is present" (do upkg.realiseU site.motd)
+            "grep -q upkg $out"
+        ]
+      report = results -> let
+        List.foreach
+          (r -> let
+            mark = if upkg.CheckResult.passed r then "ok  " else "FAIL"
+            printLine ("  " ++ mark ++ " " ++ upkg.CheckResult.label r))
+          results
+      printLine "== release candidate: curated set =="
+      (ok, results) = upkg.release curated
+      report results
+      if ok then
+        printLine ("release advanced: " ++ upkg.release.id results)
+      else printLine "release BLOCKED"
+      -- inject a regression: a constituent whose test now fails
+      printLine "== same set with a regressed check =="
+      regressed =
+        curated
+          ++ [ mk "greeting also says goodbye" (do upkg.realise pkgs.greeting)
+                 "grep -q goodbye $out"
+             ]
+      (ok2, results2) = upkg.release regressed
+      report results2
+      if ok2 then
+        printLine ("release advanced: " ++ upkg.release.id results2)
+      else printLine "release BLOCKED: not all constituents pass"
     ["claims"] ->
       -- The SAME package name, built two ways -> two content hashes.
       tool = flavor -> let

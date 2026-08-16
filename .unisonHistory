@@ -6,6 +6,35 @@ load src/site.u
 update
 load src/pkgs.u
 update
+load src/upkg/09-release.u
+update
+load src/upkg/08-claims.u
+update
+load src/upkg/07-builders.u
+update
+load src/upkg/06-cargo.u
+update
+load src/upkg/05-drv.u
+update
+load src/upkg/04-plan.u
+update
+load src/upkg/03-ship.u
+update
+load src/upkg/02-index.u
+update
+load src/upkg/01-model.u
+update
+load src/upkg/00-core.u
+find Text.contains
+find List.all
+compile upkg.Sh.runner .ucm-compiled/runner
+compile site.test.main .ucm-compiled/test
+compile site.main .ucm-compiled/upkg
+update
+load src/site.u
+update
+load src/pkgs.u
+update
 load src/upkg/08-claims.u
 update
 load src/upkg/07-builders.u
@@ -69,32 +98,3 @@ update
 load src/upkg/04-plan.u
 update
 load src/upkg/03-ship.u
-update
-load src/upkg/02-index.u
-update
-load src/upkg/01-model.u
-update
-load src/upkg/00-core.u
-compile upkg.Sh.runner .ucm-compiled/runner
-compile site.test.main .ucm-compiled/test
-compile site.main .ucm-compiled/upkg
-update
-load src/site.u
-update
-load src/pkgs.u
-update
-load src/upkg/07-builders.u
-update
-load src/upkg/06-cargo.u
-update
-load src/upkg/05-drv.u
-update
-load src/upkg/04-plan.u
-update
-load src/upkg/03-ship.u
-update
-load src/upkg/02-index.u
-update
-load src/upkg/01-model.u
-update
-load src/upkg/00-core.u

@@ -1,0 +1,54 @@
+-- The release aggregate: nixpkgs' `tested` channel model. A release
+-- is a curated set of constituents (a package plus a smoke test on
+-- its output); the release advances only when every one builds and
+-- passes. In a content-addressed world the release identity is just
+-- the hash of its constituents' outputs -- a channel is a value.
+
+-- build produces the drv path (wrap realise / realiseU); test is a
+-- shell predicate run with $out bound to the built output path.
+type upkg.Check =
+  { label : Text, build : '{IO, Exception} Text, test : Text }
+
+type upkg.CheckResult = { label : Text, passed : Boolean, out : Text }
+
+-- Build a constituent and run its smoke test against the output.
+upkg.runCheck : upkg.Check -> {IO, Exception} upkg.CheckResult
+upkg.runCheck = cases
+  upkg.Check.Check label build test ->
+    drv = !build
+    out =
+      upkg.chomp
+        (upkg.nix
+          ["build", "--no-link", "--print-out-paths", drv ++ "^out"]
+          "")
+    res =
+      upkg.exec
+        "/bin/sh"
+        [ "-c"
+        , "out=" ++ out ++ "; if " ++ test
+            ++ "; then echo PASS; else echo FAIL; fi"
+        ]
+        ""
+    upkg.CheckResult.CheckResult label (Text.contains "PASS" res) out
+
+-- Run the whole aggregate. Returns whether all passed and the
+-- per-constituent results.
+upkg.release :
+  [upkg.Check] -> {IO, Exception} (Boolean, [upkg.CheckResult])
+upkg.release checks =
+  results = List.map upkg.runCheck checks
+  allOk = List.all upkg.CheckResult.passed results
+  (allOk, results)
+
+-- The release identity: a hash over the passing constituents'
+-- (label, output) pairs. Same constituents, same outputs -> same
+-- release id, like a reproducible channel.
+upkg.release.id : [upkg.CheckResult] -> Text
+upkg.release.id results =
+  manifest =
+    Text.join
+      "\n"
+      (List.map
+        (r -> upkg.CheckResult.label r ++ " " ++ upkg.CheckResult.out r)
+        results)
+  upkg.base32.encode (upkg.sha256 manifest)

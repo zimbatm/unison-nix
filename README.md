@@ -300,6 +300,32 @@ This is the lockfile pattern from PROPOSAL.md §5.2, implemented:
 One wrinkle: Unison base has no setenv, so `CARGO_HOME` is passed
 by spawning through coreutils' `env(1)`.
 
+## Release: a curated set with a blocking test aggregate
+
+```
+$ ./run.sh release
+== release candidate: curated set ==
+  ok   greeting says hello
+  ok   banner has both lines
+  ok   shout is uppercase
+  ok   motd is present
+release advanced: 12mzwgy5kwmmcfjyxas97lfbzss6bb0l3mrq90914bx9j93zggr1
+== same set with a regressed check ==
+  ...
+  FAIL greeting also says goodbye
+release BLOCKED: not all constituents pass
+```
+
+nixpkgs advances a channel only when its `tested` aggregate -- a
+hand-curated list of release-blocking constituents plus NixOS tests --
+all succeed. `upkg.release` is that aggregate: each constituent is a
+package plus a smoke test on its output; the release advances only when
+every one builds and passes. The release **identity** is a hash over the
+constituents' (label, output) pairs -- so a channel is a content-addressed
+value: same constituents, same outputs, same release id. A single
+regressed check blocks the whole release, exactly as a failing `tested`
+constituent holds back a nixpkgs channel.
+
 ## Claims: advisories keyed by content hash, not by name
 
 ```
@@ -540,6 +566,7 @@ nix develop          # or: nix shell nixpkgs#unison-ucm
 ./run.sh profile     # user environment composing pkgs + nixpkgs
 ./run.sh graft       # patch a leaf, watch CA cut the rebuild cascade
 ./run.sh claims      # hash-keyed advisory that an exemption can't leak past
+./run.sh release     # curated set + blocking test aggregate (a channel)
 ./run.sh motd        # writeText: a fixed-string artifact
 ./run.sh profile     # symlinkJoin: merge Unison + nixpkgs packages
 ./run.sh upkg        # upkg packages itself (the quine)
