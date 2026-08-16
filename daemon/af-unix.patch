@@ -24,17 +24,25 @@ index daee763..a1179c1 100644
    (Map ForeignFunc (Sandbox, SuperNormal Reference Symbol))
  foreignDeclResults =
 diff --git a/unison-runtime/src/Unison/Runtime/Foreign/Function.hs b/unison-runtime/src/Unison/Runtime/Foreign/Function.hs
-index fcf0e69..329f83b 100644
+index fcf0e69..98d8470 100644
 --- a/unison-runtime/src/Unison/Runtime/Foreign/Function.hs
 +++ b/unison-runtime/src/Unison/Runtime/Foreign/Function.hs
-@@ -368,6 +368,11 @@ foreignCallHelper = \case
+@@ -94,6 +94,7 @@ import Network.Simple.TCP as SYS
+     send,
+   )
+ import Network.Socket (Socket)
++import qualified Network.Socket as NS
+ import Network.Socket as SYS
+   ( PortNumber,
+     Socket,
+@@ -368,6 +369,11 @@ foreignCallHelper = \case
           port
           ) ->
            fst <$> SYS.bindSock (hostPreference mhst) port
 +  IO_UnixClientSocket_impl_v1 -> mkForeignIOF $
 +    \(path :: Util.Text.Text) -> do
-+      sock <- SYS.socket SYS.AF_UNIX SYS.Stream SYS.defaultProtocol
-+      SYS.connect sock (SYS.SockAddrUnix (Util.Text.unpack path))
++      sock <- NS.socket NS.AF_UNIX NS.Stream NS.defaultProtocol
++      NS.connect sock (NS.SockAddrUnix (Util.Text.unpack path))
 +      pure sock
    Socket_toText -> mkForeign $
      \(sock :: Socket) -> pure $ show sock
