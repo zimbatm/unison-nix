@@ -1,0 +1,51 @@
+-- Typed dependencies. The Sh dialect's `dep "name"` is stringly: a
+-- typo or an undeclared name is a runtime failure, and the deps
+-- list is a separate field that can drift from what the script
+-- actually uses. Nix solves the same problem with hidden string
+-- context (and unsafeDiscardStringContext to escape it).
+--
+-- Here `need` both DECLARES a dependency and returns an opaque
+-- handle. The only way to get a path is from a handle, and the only
+-- way to get a handle is `need`. So every referenced path was
+-- declared -- enforced by ordinary Unison scoping, at compile time
+-- -- and the deps list is DERIVED from the needs, never written
+-- separately. Referencing an undeclared dep does not typecheck: its
+-- handle is not in scope.
+
+type upkg.Handle = Handle Text   -- opaque; wraps the @token@ plan substitutes
+
+ability upkg.B where
+  need : upkg.Dep -> upkg.Handle
+  shrun : Text -> ()
+
+-- Splice a handle's path into a command string.
+upkg.B.path : upkg.Handle -> Text
+upkg.B.path = cases upkg.Handle.Handle t -> t
+
+-- The output path token (substituted to $out by the Sh prelude).
+upkg.B.out : Text
+upkg.B.out = "$out"
+
+-- Interpret a typed build: collect the declared deps and the
+-- emitted commands. Pure -- no IO -- so it runs at plan time.
+upkg.B.collect : '{g, upkg.B} () ->{g} ([upkg.Dep], [Text])
+upkg.B.collect prog =
+  go : [upkg.Dep] -> [Text] -> Request {upkg.B} () -> ([upkg.Dep], [Text])
+  go deps cmds = cases
+    { _ } -> (deps, cmds)
+    { upkg.B.need d -> resume } ->
+      tok = "@" ++ upkg.Dep.name d ++ "@"
+      seen = List.any (e -> upkg.Dep.name e Text.== upkg.Dep.name d) deps
+      deps' = if seen then deps else deps :+ d
+      handle resume (upkg.Handle.Handle tok) with go deps' cmds
+    { upkg.B.shrun c -> resume } ->
+      handle resume () with go deps (cmds :+ c)
+  handle !prog with go [] []
+
+-- A typed package: the build is a value over the B ability; the
+-- deps and the @token@ script fall out of it and feed the ordinary
+-- Pkg realiser (which substitutes each @name@ token).
+upkg.tpkg : Text -> '{upkg.B} () -> upkg.Pkg
+upkg.tpkg name prog =
+  (deps, cmds) = upkg.B.collect prog
+  upkg.Pkg.Pkg name (Text.join "\n" cmds) deps

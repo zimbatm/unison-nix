@@ -1,3 +1,66 @@
+delete.term site.badPkg
+load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/bad.u
+compile upkg.Sh.runner .ucm-compiled/runner
+compile site.test.main .ucm-compiled/test
+compile site.main .ucm-compiled/upkg
+update
+load src/site.u
+update
+load src/pkgs.u
+update
+load src/upkg/10-typed.u
+update
+load src/upkg/09-release.u
+update
+load src/upkg/08-claims.u
+update
+load src/upkg/07-builders.u
+update
+load src/upkg/06-cargo.u
+update
+load src/upkg/05-drv.u
+update
+load src/upkg/04-plan.u
+update
+load src/upkg/03-ship.u
+update
+load src/upkg/02-index.u
+update
+load src/upkg/01-model.u
+update
+load src/upkg/00-core.u
+view upkg.Ref
+branches
+compile upkg.Sh.runner .ucm-compiled/runner
+compile site.test.main .ucm-compiled/test
+compile site.main .ucm-compiled/upkg
+update
+load src/site.u
+update
+load src/pkgs.u
+update
+load src/upkg/10-typed.u
+update
+load src/upkg/09-release.u
+update
+load src/upkg/08-claims.u
+update
+load src/upkg/07-builders.u
+update
+load src/upkg/06-cargo.u
+update
+load src/upkg/05-drv.u
+update
+load src/upkg/04-plan.u
+update
+load src/upkg/03-ship.u
+update
+load src/upkg/02-index.u
+update
+load src/upkg/01-model.u
+update
+load src/upkg/00-core.u
+load src/upkg/10-typed.u
 compile upkg.Sh.runner .ucm-compiled/runner
 compile site.test.main .ucm-compiled/test
 compile site.main .ucm-compiled/upkg
@@ -35,66 +98,3 @@ load src/site.u
 update
 load src/pkgs.u
 update
-load src/upkg/08-claims.u
-update
-load src/upkg/07-builders.u
-update
-load src/upkg/06-cargo.u
-update
-load src/upkg/05-drv.u
-update
-load src/upkg/04-plan.u
-update
-load src/upkg/03-ship.u
-update
-load src/upkg/02-index.u
-update
-load src/upkg/01-model.u
-update
-load src/upkg/00-core.u
-load src/site.u
-compile upkg.Sh.runner .ucm-compiled/runner
-compile site.test.main .ucm-compiled/test
-compile site.main .ucm-compiled/upkg
-update
-load src/site.u
-update
-load src/pkgs.u
-update
-load src/upkg/08-claims.u
-update
-load src/upkg/07-builders.u
-update
-load src/upkg/06-cargo.u
-update
-load src/upkg/05-drv.u
-update
-load src/upkg/04-plan.u
-update
-load src/upkg/03-ship.u
-update
-load src/upkg/02-index.u
-update
-load src/upkg/01-model.u
-update
-load src/upkg/00-core.u
-load src/upkg/08-claims.u
-compile upkg.Sh.runner .ucm-compiled/runner
-compile site.test.main .ucm-compiled/test
-compile site.main .ucm-compiled/upkg
-update
-load src/site.u
-update
-load src/pkgs.u
-update
-load src/upkg/08-claims.u
-update
-load src/upkg/07-builders.u
-update
-load src/upkg/06-cargo.u
-update
-load src/upkg/05-drv.u
-update
-load src/upkg/04-plan.u
-update
-load src/upkg/03-ship.u

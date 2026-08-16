@@ -147,6 +147,28 @@ site.dispatch args =
           ["build", "--no-link", "--print-out-paths", newRoot ++ "^out"]
           ""
       printLine ("out: " ++ upkg.chomp out)
+    ["typed"] ->
+      -- Every path spliced into a command comes from a `need`, which
+      -- declares the dependency. Drop the `need` line and `hello`
+      -- is unbound -- it won't compile. The deps list is derived,
+      -- not written.
+      pkg =
+        upkg.tpkg "typed-greet" do
+          use upkg.B need shrun path
+          hello = need (upkg.Dep.Nixpkgs "hello")
+          tr = need (upkg.Dep.Nixpkgs "coreutils")
+          shrun
+            (path hello ++ "/bin/hello | " ++ path tr ++ "/bin/tr a-z A-Z > "
+              ++ upkg.B.out)
+      printLine "realising typed-greet (deps derived from `need`) ..."
+      drv = upkg.realise pkg
+      out =
+        upkg.chomp
+          (upkg.nix
+            ["build", "--no-link", "--print-out-paths", drv ++ "^out"]
+            "")
+      printLine ("out: " ++ out)
+      printLine ("  " ++ upkg.chomp (upkg.exec "cat" [out] ""))
     ["release"] ->
       mk = label -> build -> test -> upkg.Check.Check label build test
       -- the curated constituents, each with a smoke test on its output

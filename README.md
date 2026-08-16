@@ -389,6 +389,43 @@ Gotcha recorded: `nix build --dry-run` does not consult
 realisations for floating CA outputs, so it always predicts the
 full conservative cascade; count actual `building` lines instead.
 
+## Typed dependencies: no reference without declaration
+
+```
+$ ./run.sh typed
+realising typed-greet (deps derived from `need`) ...
+out: /nix/store/9drdgpll...-typed-greet
+  HELLO, WORLD!
+```
+
+```unison
+upkg.tpkg "typed-greet" do
+  use upkg.B need shrun path
+  hello = need (upkg.Dep.Nixpkgs "hello")      -- declare + get a handle
+  tr    = need (upkg.Dep.Nixpkgs "coreutils")
+  shrun (path hello ++ "/bin/hello | " ++ path tr ++ "/bin/tr a-z A-Z > "
+    ++ upkg.B.out)
+```
+
+`need` both declares a dependency and returns an opaque `Handle`; the only
+way to get a path is `path handle`, and the only way to get a handle is
+`need`. So every path spliced into a command was declared, and the deps
+list is *derived* from the needs rather than written as a separate field
+that can drift. Drop the `need hello` line and it does not compile --
+`hello` is simply not in scope:
+
+```
+$ # shrun (path hello ...) without `hello = need ...`
+I couldn't figure out what hello refers to here
+```
+
+This is what Nix's string context provides (automatic dependency tracking
+through interpolation) but as a **compile-time** guarantee enforced by
+ordinary scoping -- and unlike string context there is no
+`unsafeDiscardStringContext` escape hatch, because a reference to an
+undeclared dep is unrepresentable. `B.collect` interprets the build purely
+at plan time into (deps, script), feeding the ordinary realiser.
+
 ## The quine: upkg packages upkg
 
 ```
@@ -569,6 +606,7 @@ nix develop          # or: nix shell nixpkgs#unison-ucm
 ./run.sh release     # curated set + blocking test aggregate (a channel)
 ./run.sh motd        # writeText: a fixed-string artifact
 ./run.sh profile     # symlinkJoin: merge Unison + nixpkgs packages
+./run.sh typed       # typed deps: undeclared reference won't compile
 ./run.sh upkg        # upkg packages itself (the quine)
 ./run.sh uni-hello   # override nixpkgs hello with a pure function
 ./run.sh deep-hello  # override stdenv, rewrite the closure
