@@ -1,0 +1,80 @@
+-- The claims layer. In nixpkgs, brokenness/insecurity/maintainer
+-- data lives INSIDE the package expression, keyed by attribute path,
+-- and user exemptions are name-version strings
+-- (permittedInsecurePackages = ["olm-3.2.16"]). That string match
+-- silently keeps applying when the artifact is rebuilt with
+-- different content -- the exemption leaks to an artifact nobody
+-- audited.
+--
+-- Here a claim is an attestation ABOUT A CONTENT HASH (the drv
+-- path, which is content-addressed). An exemption is scoped to that
+-- exact hash, so it cannot transfer to a different build even under
+-- the same name. Claims live outside the (immutable) definition, in
+-- an appendable, multi-writer store -- modelled here as a value.
+
+type upkg.Claim
+  = Broken Text        -- reason
+  | Insecure Text      -- advisory / CVE id
+  | Unmaintained
+
+type upkg.Handler = Ignore | Warn | Error
+
+-- subject is the content hash the claim is about (a drv path). by is
+-- who asserted it (a security team, a bot, a person).
+type upkg.Attestation = { subject : Text, claim : upkg.Claim, by : Text }
+
+-- A user policy override, scoped to an exact subject hash.
+type upkg.Exemption = { subject : Text, handler : upkg.Handler }
+
+upkg.Claim.describe : upkg.Claim -> Text
+upkg.Claim.describe = cases
+  upkg.Claim.Broken r -> "broken: " ++ r
+  upkg.Claim.Insecure a -> "insecure: " ++ a
+  upkg.Claim.Unmaintained -> "unmaintained"
+
+-- The default severity lattice, following nixpkgs problems.nix:
+-- security/brokenness are errors, lifecycle is a warning.
+upkg.Claim.defaultHandler : upkg.Claim -> upkg.Handler
+upkg.Claim.defaultHandler = cases
+  upkg.Claim.Broken _ -> upkg.Handler.Error
+  upkg.Claim.Insecure _ -> upkg.Handler.Error
+  upkg.Claim.Unmaintained -> upkg.Handler.Warn
+
+-- An exemption applies ONLY to the exact subject hash it names. This
+-- is the whole point: change the artifact, change the hash, and the
+-- exemption no longer matches.
+upkg.resolveHandler : [upkg.Exemption] -> upkg.Attestation -> upkg.Handler
+upkg.resolveHandler exemptions att =
+  match
+    List.find
+      (e -> upkg.Exemption.subject e Text.== upkg.Attestation.subject att)
+      exemptions
+    with
+    Some e -> upkg.Exemption.handler e
+    None -> upkg.Claim.defaultHandler (upkg.Attestation.claim att)
+
+-- Gate a realised artifact (its drv path) against the claims store
+-- and the user's exemptions. Errors raise; warnings print; ignores
+-- pass. Returns the drv path when allowed.
+upkg.gate :
+  [upkg.Attestation] -> [upkg.Exemption] -> Text -> {IO, Exception} Text
+upkg.gate claims exemptions drvPath =
+  relevant =
+    List.filter
+      (att -> upkg.Attestation.subject att Text.== drvPath)
+      claims
+  check = att -> let
+    desc =
+      upkg.Claim.describe (upkg.Attestation.claim att) ++ " (by "
+        ++ upkg.Attestation.by att ++ ")"
+    match upkg.resolveHandler exemptions att with
+      upkg.Handler.Ignore -> ()
+      upkg.Handler.Warn -> printLine ("  warning: " ++ desc)
+      upkg.Handler.Error ->
+        Exception.raise
+          (Generic.failure
+            ("refusing " ++ drvPath ++ "\n  " ++ desc
+              ++ "\n  (exempt this exact hash to override)")
+            ())
+  List.foreach check relevant
+  drvPath

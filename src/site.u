@@ -147,6 +147,35 @@ site.dispatch args =
           ["build", "--no-link", "--print-out-paths", newRoot ++ "^out"]
           ""
       printLine ("out: " ++ upkg.chomp out)
+    ["claims"] ->
+      -- The SAME package name, built two ways -> two content hashes.
+      tool = flavor -> let
+        upkg.Pkg.Pkg "tool-1.0" ("echo " ++ flavor ++ " > $out") []
+      drvAudited = upkg.realise (tool "clean")
+      drvRebuilt = upkg.realise (tool "clean # rebuilt with a patched dep")
+      -- The security team attests the same advisory against BOTH
+      -- artifact hashes (a source CVE affects every build).
+      claims =
+        [ upkg.Attestation.Attestation
+            drvAudited (upkg.Claim.Insecure "CVE-DEMO-1") "security-team"
+        , upkg.Attestation.Attestation
+            drvRebuilt (upkg.Claim.Insecure "CVE-DEMO-1") "security-team"
+        ]
+      -- The user audited ONLY the first build and exempted its hash.
+      exemptions = [upkg.Exemption.Exemption drvAudited upkg.Handler.Warn]
+      printLine ("audited build:  " ++ drvAudited)
+      printLine ("rebuilt build:  " ++ drvRebuilt)
+      printLine "  (same name tool-1.0, different content, different hash)"
+      printLine "checking the audited build (exemption names its hash):"
+      _ = upkg.gate claims exemptions drvAudited
+      printLine "  -> allowed"
+      printLine "checking the rebuilt build (same name, NOT the exempted hash):"
+      match Exception.catch '(upkg.gate claims exemptions drvRebuilt) with
+        Right _ -> printLine "  -> allowed"
+        Left f ->
+          printLine "  -> BLOCKED. The exemption did not leak to the new hash."
+          printLine
+            "  (Nix permittedInsecurePackages = [tool-1.0] would cover both.)"
     ["graft"] ->
       printLine "== build shout =="
       drv0 = upkg.submit (upkg.plan pkgs.shout)

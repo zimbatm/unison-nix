@@ -300,6 +300,37 @@ This is the lockfile pattern from PROPOSAL.md §5.2, implemented:
 One wrinkle: Unison base has no setenv, so `CARGO_HOME` is passed
 by spawning through coreutils' `env(1)`.
 
+## Claims: advisories keyed by content hash, not by name
+
+```
+$ ./run.sh claims
+audited build:  /nix/store/lsabvxhv...-tool-1.0.drv
+rebuilt build:  /nix/store/ylclfs8s...-tool-1.0.drv
+  (same name tool-1.0, different content, different hash)
+checking the audited build (exemption names its hash):
+  -> allowed
+checking the rebuilt build (same name, NOT the exempted hash):
+  -> BLOCKED. The exemption did not leak to the new hash.
+  (Nix permittedInsecurePackages = [tool-1.0] would cover both.)
+```
+
+In nixpkgs, `meta.knownVulnerabilities` lives inside the package
+expression and user exemptions are `name-version` strings
+(`permittedInsecurePackages = ["olm-3.2.16"]`). That string match keeps
+applying when the artifact is rebuilt with different content -- the
+exemption leaks to a build nobody audited.
+
+Here a claim is an attestation about a **content hash** (the drv path,
+which is content-addressed), stored outside the immutable definition in
+an appendable, multi-writer log (modelled as a Unison value). An
+exemption names an exact hash, so a rebuild -- even under the same
+name -- is not covered. The handler lattice (ignore/warn/error, default
+error for insecure/broken, warn for unmaintained) is taken from nixpkgs'
+newer `problems.nix`. `upkg.gate` filters claims by the realised drv
+path, resolves each against the user's exemptions, and raises, warns, or
+passes. This is the single biggest governance win content-addressing
+offers: an audit binds to the thing you audited, exactly.
+
 ## The graft: security response without the mass rebuild
 
 ```
@@ -508,6 +539,7 @@ nix develop          # or: nix shell nixpkgs#unison-ucm
 ./run.sh hexyl       # build a real Rust tool from its Cargo.lock
 ./run.sh profile     # user environment composing pkgs + nixpkgs
 ./run.sh graft       # patch a leaf, watch CA cut the rebuild cascade
+./run.sh claims      # hash-keyed advisory that an exemption can't leak past
 ./run.sh motd        # writeText: a fixed-string artifact
 ./run.sh profile     # symlinkJoin: merge Unison + nixpkgs packages
 ./run.sh upkg        # upkg packages itself (the quine)
