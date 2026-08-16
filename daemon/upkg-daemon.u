@@ -1,0 +1,38 @@
+-- upkg's daemon backend, running on the local fork (patched ucm +
+-- forked base with the socket builtin rescued to lib.sockimpl).
+-- This is upkg's own library talking to the nix-daemon directly --
+-- no `nix` subprocess -- using the same nixd/nar protocol code
+-- plus upkg's pinned index.
+
+upkg.daemon.connect : Text ->{IO, Exception} Socket
+upkg.daemon.connect path =
+  match lib.sockimpl path with
+    Right s -> s
+    Left f -> raise f
+
+upkg.daemon.socketPath : Text
+upkg.daemon.socketPath = "/nix/var/nix/daemon-socket/socket"
+
+-- Prove the wiring: upkg's real library (the pinned index) feeds a
+-- real query and a real write over the socket.
+upkg.daemon.main : '{IO, Exception} ()
+upkg.daemon.main = do
+  sock = upkg.daemon.connect upkg.daemon.socketPath
+  v = nixd.handshake sock
+  printLine ("[upkg on the local fork] daemon protocol " ++ Nat.toText v)
+  -- READ: take a nixpkgs path from upkg's OWN pinned index, then
+  -- ask the daemon (over the socket) whether it is a valid path.
+  pin = upkg.index.get "hello"
+  outPath = upkg.Pinned.out pin
+  ok = nixd.isValidPath sock outPath
+  printLine ("  index hello -> " ++ outPath)
+  printLine ("  valid via socket: " ++ (if ok then "yes" else "no"))
+  -- WRITE: build a NAR tree in Unison and add it over the socket.
+  tree =
+    nar.Fs.Dir
+      [ ( "greeting"
+        , nar.Fs.File (Text.toUtf8 "hi from upkg over the socket\n") false
+        )
+      ]
+  added = nixd.addToStore sock "upkg-forked-add" [] tree
+  printLine ("  added via socket: " ++ added)
