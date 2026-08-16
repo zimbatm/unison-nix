@@ -65,8 +65,16 @@ frontend computes only two placeholder hashes.
 ## Status
 - Socket builtin: `unixClientSocket` patch applied to the unison runtime,
   patched ucm building.
-- Protocol client (`nixd.u`): codec + handshake + `wopIsValidPath` probe,
-  typechecked against base; needs only the socket to run live.
+- Protocol client (`nixd.u`): codec + handshake + `wopIsValidPath` +
+  `wopAddToStore`. **The handshake and isValidPath sequence is validated
+  live against nix 2.35.1** via `proto-reference.py` (Python standing in
+  for the socket): real path -> True, well-formed nonexistent -> False.
+  Findings baked into nixd.u: (a) advertise protocol 1.33 so
+  `min(daemon,us) < 1.38` and the feature-set exchange is skipped on both
+  sides; (b) after version negotiation the daemon sends its version string
+  (ClientHandshakeInfo) followed by a post-handshake stderr frame, distinct
+  from each op's own stderr frame -- collapsing the two makes every reply
+  read one u64 late.
 - NAR (`nar.u`): complete and byte-exact-verified against `nix-store
   --dump`. No socket needed.
 - Remaining: wire `wopAddToStore` (name, refs, framed NAR source) and

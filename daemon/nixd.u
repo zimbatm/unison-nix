@@ -10,7 +10,7 @@ nixd.magic2 : Nat
 nixd.magic2 = 0x6478696f
 
 nixd.ourVersion : Nat
-nixd.ourVersion = 0x0121  -- protocol 1.33; skips >=1.35 feature list
+nixd.ourVersion = 0x0121  -- protocol 1.33: keeps us < 1.38, skipping feature negotiation
 
 -- u64 little-endian, matching the daemon.
 nixd.putNat : Nat -> Bytes
@@ -85,6 +85,11 @@ nixd.handshake sock =
     -- >=1.14: obsolete cpu-affinity nat; >=1.11: reserve-space flag
     Socket.send sock (nixd.putNat 0)
     Socket.send sock (nixd.putNat 0)
+    -- >=1.33: ClientHandshakeInfo = the daemon's nix version string.
+    -- (Advertising 1.33 keeps protoVersion < 1.38, skipping the
+    -- feature-set exchange on both sides.) Then a post-handshake
+    -- processStderr, distinct from each op's own.
+    _ = nixd.recvStr sock
     nixd.processStderr sock
     daemonV
 
