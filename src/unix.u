@@ -563,7 +563,22 @@ unix.Drv.caify d =
     |> unix.Drv.args.modify (List.map swap)
     |> unix.Drv.attrs.modify (Optional.map (unix.json.mapText swap))
     |> unix.Drv.outputs.modify
-         (List.map (p -> match p with (k, _) -> (k, unix.Out.Floating)))
+         (List.map
+           (p -> match p with
+             (k, unix.Out.Fixed h m) -> (k, unix.Out.Fixed h m)
+             (k, _) -> (k, unix.Out.Floating)))
+
+unix.Drv.setEnv : Text -> Text -> unix.Drv -> unix.Drv
+unix.Drv.setEnv k v d =
+  upsert = kvs -> let
+    if List.any (p -> at1 p Text.== k) kvs
+    then
+      List.map
+        (p -> match p with
+          (k2, v2) -> if k2 Text.== k then (k2, v) else (k2, v2))
+        kvs
+    else kvs :+ (k, v)
+  unix.Drv.env.modify upsert d
 
 unix.Drv.setAttr : Text -> Json -> unix.Drv -> unix.Drv
 unix.Drv.setAttr k v d =
@@ -586,6 +601,115 @@ unix.importDrv attr =
 
 unix.Drv.realise : unix.Drv -> {IO, Exception} Text
 unix.Drv.realise d = unix.addDrv (Json.toText (unix.Drv.toJson d))
+
+-- ----------------------------------------------------------------
+-- Deep overrides: import a whole drv closure, override any node,
+-- rewrite everything downstream. What nixpkgs does with
+-- overrideAttrs and evaluator fixpoints is a pure graph
+-- transformation here. Unaffected subgraphs keep their
+-- input-addressed drvs and literal paths, so the binary cache
+-- still serves them.
+
+-- Closure keyed by drv basename, from `nix derivation show -r`.
+unix.importClosure : Text -> {IO, Exception} [(Text, unix.Drv)]
+unix.importClosure drvPath =
+  raw = unix.nix ["derivation", "show", "-r", drvPath] ""
+  j = Json.fromText raw
+  ds = unix.json.asObject (unix.json.get "derivations" j)
+  List.map (p -> match p with (b, dj) -> (b, unix.Drv.fromJson dj)) ds
+
+-- Does node b transitively depend on a target? Memoized; nodes
+-- outside the closure map count as unaffected.
+unix.closure.mark :
+  [(Text, unix.Drv)] -> (Text -> Boolean) -> [(Text, Boolean)] -> Text
+    -> ([(Text, Boolean)], Boolean)
+unix.closure.mark closure isTarget cache b =
+  match unix.assoc.lookup b cache with
+    Some r -> (cache, r)
+    None ->
+      if isTarget b then (cache :+ (b, true), true)
+      else match unix.assoc.lookup b closure with
+        None -> (cache :+ (b, false), false)
+        Some d ->
+          step = acc -> p -> match acc with
+            (c, hit) -> match p with
+              (i, _) ->
+                (c2, r) = unix.closure.mark closure isTarget c i
+                (c2, hit || r)
+          (cache2, hit) =
+            List.foldLeft step (cache, false) (unix.Drv.inputDrvs d)
+          (cache2 :+ (b, hit), hit)
+
+unix.closure.markAll :
+  [(Text, unix.Drv)] -> [Text] -> [(Text, Boolean)]
+unix.closure.markAll closure targets =
+  isT = b -> List.any (t -> t Text.== b) targets
+  List.foldLeft
+    (c -> p -> at1 (unix.closure.mark closure isT c (at1 p)))
+    []
+    closure
+
+-- Rewrite bottom-up. An affected drv gets: new inputDrvs keys for
+-- its rewritten inputs, upstream placeholders in place of their old
+-- literal output paths, the user override if it is a target, and
+-- CA-ification. Returns the new drv path; the cache maps old
+-- basename -> new drv path.
+unix.closure.rewrite :
+  [(Text, unix.Drv)] -> [(Text, Boolean)] -> [Text]
+    -> (unix.Drv -> unix.Drv) -> [(Text, Text)] -> Text
+    -> {IO, Exception} ([(Text, Text)], Text)
+unix.closure.rewrite closure marks targets f cache b =
+  affected = k -> Optional.getOrElse false (unix.assoc.lookup k marks)
+  match unix.assoc.lookup b cache with
+    Some p -> (cache, p)
+    None ->
+      if Boolean.not (affected b) then (cache, "/nix/store/" ++ b)
+      else
+        d = match unix.assoc.lookup b closure with
+          Some d -> d
+          None ->
+            Exception.raise
+              (Generic.failure ("not in closure: " ++ b) ())
+        step = acc -> p -> match acc with
+          (c, ins, subs) -> match p with
+            (i, outs) ->
+              if Boolean.not (affected i) then (c, ins :+ (i, outs), subs)
+              else
+                (c2, newPath) =
+                  unix.closure.rewrite closure marks targets f c i
+                iDrv = match unix.assoc.lookup i closure with
+                  Some x -> x
+                  None ->
+                    Exception.raise
+                      (Generic.failure ("not in closure: " ++ i) ())
+                subFor = ss -> op -> match op with
+                  (oname, unix.Out.Addressed pth) ->
+                    ss
+                      :+ ( "/nix/store/" ++ pth
+                         , unix.upstreamPlaceholder newPath oname
+                         )
+                  _ -> ss
+                subs2 = List.foldLeft subFor subs (unix.Drv.outputs iDrv)
+                (c2, ins :+ (Text.drop 11 newPath, outs), subs2)
+        (cache2, newIns, subs) =
+          List.foldLeft step (cache, [], []) (unix.Drv.inputDrvs d)
+        swap = t -> let
+          List.foldLeft
+            (s -> pr -> match pr with (o, n) -> Text.replaceAll o n s)
+            t
+            subs
+        d1 =
+          d
+            |> unix.Drv.inputDrvs.set newIns
+            |> unix.Drv.env.modify
+                 (List.map (p -> match p with (k, v) -> (k, swap v)))
+            |> unix.Drv.args.modify (List.map swap)
+            |> unix.Drv.attrs.modify
+                 (Optional.map (unix.json.mapText swap))
+        d2 = if List.any (t -> t Text.== b) targets then f d1 else d1
+        newPath = unix.Drv.realise (unix.Drv.caify d2)
+        printLine ("  rewrite " ++ unix.Drv.name d ++ " -> " ++ newPath)
+        (cache2 :+ (b, newPath), newPath)
 
 -- ----------------------------------------------------------------
 -- A tiny package set.
@@ -695,6 +819,42 @@ unix.main = do
           ++ " attrs in one nix eval ...")
       !unix.index.generate
       printLine "wrote src/nixpkgs-index.u"
+    ["deep-hello"] ->
+      (rootDrv, _, _) = unix.resolveNixpkgs "hello"
+      printLine ("importing closure of " ++ rootDrv ++ " ...")
+      closure = unix.importClosure rootDrv
+      printLine ("  " ++ Nat.toText (List.size closure) ++ " derivations")
+      targets =
+        List.foldLeft
+          (acc -> p -> match p with
+            (b, d) ->
+              n = unix.Drv.name d
+              if (n Text.== "stdenv-linux")
+                || (n Text.== "stdenv-linux-no-cc")
+              then acc :+ b
+              else acc)
+          []
+          closure
+      printLine
+        ("  targets: " ++ Nat.toText (List.size targets) ++ " stdenv drvs")
+      marker = "echo '>>> hello from the unison graph rewrite <<<'"
+      f = d -> let
+        old =
+          Optional.getOrElse "" (unix.assoc.lookup "preHook" (unix.Drv.env d))
+        unix.Drv.setEnv "preHook" (old ++ "\n" ++ marker) d
+      marks = unix.closure.markAll closure targets
+      nAff =
+        List.size (List.filter (p -> at2 p) marks)
+      printLine ("  affected: " ++ Nat.toText nAff ++ " drvs to rewrite")
+      (_, newRoot) =
+        unix.closure.rewrite closure marks targets f []
+          (Text.drop 11 rootDrv)
+      printLine ("building " ++ newRoot ++ " ...")
+      out =
+        unix.nix
+          ["build", "--no-link", "--print-out-paths", newRoot ++ "^out"]
+          ""
+      printLine ("out: " ++ unix.chomp out)
     ["uni-hello"] ->
       printLine "importing nixpkgs#hello ..."
       d = unix.importDrv "hello"

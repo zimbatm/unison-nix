@@ -164,6 +164,47 @@ The imported derivation keeps its own builder and stdenv machinery;
 only the fields we touch change. nixpkgs' structured attrs (real
 lists like `configureFlags`) make the overrides surgical.
 
+## Deep overrides: closure rewrite
+
+```
+$ ./run.sh deep-hello
+importing closure of /nix/store/vvjw1pyn...-hello-2.12.3.drv ...
+  599 derivations
+  targets: 2 stdenv drvs
+  affected: 27 drvs to rewrite
+  rewrite stdenv-linux -> /nix/store/3d2rxxqm...-stdenv-linux.drv
+  rewrite stdenv-linux-no-cc -> ...
+  rewrite curl-8.21.0 -> ...
+  rewrite hello-2.12.3.tar.gz -> ...
+  rewrite hello-2.12.3 -> /nix/store/zxz5fj7g...-hello-2.12.3.drv
+building ...
+out: /nix/store/mn6l2jdd...-hello-2.12.3
+```
+
+This overrides a node deep in the graph — both stdenv drvs get a
+marker line appended to `preHook` — and rewrites everything
+downstream as a pure graph transformation. The marker shows up in
+the build logs of `version-check-hook` and `hello` itself. What
+nixpkgs does with `overrideAttrs` and evaluator fixpoints is a fold
+over a value here.
+
+The rewrite per affected derivation: swap the inputDrvs keys of
+rewritten inputs, replace their old literal output paths with
+upstream placeholders, apply the user override on target nodes,
+CA-ify. Unaffected subgraphs (572 of 599 drvs) keep their
+input-addressed drvs and literal paths, so the binary cache still
+serves them.
+
+Two findings fell out:
+
+- The daemon rewrites upstream placeholders inside
+  `structuredAttrs` at resolution time, not just in `env` and
+  `args`. hello's `stdenv` attr was a placeholder and resolved.
+- A fixed-output drv in the middle of the cascade (the source
+  tarball, dragged in via curl) is rewritten but keeps its
+  hash-determined output path, so downstream literal references
+  stay valid with no substitution.
+
 ## How it works
 
 ```
@@ -227,6 +268,7 @@ nix develop          # or: nix shell nixpkgs#unison-ucm
 ./run.sh shout       # build a package with nixpkgs dependencies
 ./run.sh hello       # compile GNU hello from the upstream tarball
 ./run.sh uni-hello   # override nixpkgs hello with a pure function
+./run.sh deep-hello  # override stdenv, rewrite the closure
 ./run.sh index       # regenerate the pinned nixpkgs index
 ```
 
@@ -258,10 +300,10 @@ is needed.
   not how to refetch it, so after a GC the fallback re-evals.
 - The build script DSL (`@dep@` substitution) is a placeholder for a
   real typed builder API.
-- `unix.importDrv` imports one derivation, not its closure.
-  Overriding a deep dependency (e.g. glibc) needs the closure and a
-  rewrite of every downstream derivation to placeholders. Same
-  mechanism, more plumbing.
+- A deep override rebuilds every affected drv from source: a
+  CA-ified drv can never match the original input-addressed build
+  in the cache, even when the output would be byte-identical. Early
+  cutoff only helps between successive CA rebuilds.
 - `nix derivation add` and `nix build` are spawned as processes. A
   real frontend would speak the daemon protocol directly, as
   `guix-daemon` clients do.
@@ -297,3 +339,8 @@ is needed.
    transform with a pure function, print, build. CA-ification (old
    output paths -> placeholders, outputs -> floating) makes the
    mutated derivation buildable without any hash computation.
+10. The same trick scales to whole closures: mark the drvs that
+    depend on a target, rewrite them bottom-up, leave the rest
+    untouched. 1.4 MB of closure JSON (599 drvs) parses in about a
+    second with @unison/json. The daemon rewrites placeholders in
+    `structuredAttrs` too, which makes the rewrite complete.
