@@ -1,0 +1,230 @@
+-- ----------------------------------------------------------------
+-- ----------------------------------------------------------------
+-- Pure planning / effectful submission. `plan` computes the whole
+-- build graph with no IO ability -- the typechecker proves that
+-- evaluation has no side effects, which is the guarantee Nix's
+-- pure-eval mode gives by prohibition. Since the daemon computes
+-- all store paths, planned nodes reference each other symbolically;
+-- `submit` resolves the references as drv paths become known.
+
+-- A store reference in a plan: a path known at plan time (from the
+-- pinned index), or the drv path / output of a planned node.
+type upkg.Ref = Path Text | Drv Text | Output Text
+
+-- A node's build action: a shell script with @token@ substitution,
+-- or a Unison closure. Carrying the closure in the plan is pure;
+-- serializing it and harvesting its code is IO and happens in
+-- submit.
+type upkg.Action = Script Text | Closure ('{IO, Exception, upkg.Sh} ())
+
+type upkg.Node =
+  { name : Text
+  , builder : Text
+  , action : upkg.Action
+  , subs : [(Text, upkg.Ref)]        -- @token@ / dep name -> reference
+  , inputs : [(upkg.Ref, Text)]      -- (drv ref, output name)
+  , fixed : Optional Text            -- SRI hash => fixed-output
+  }
+
+type upkg.Plan = { nodes : [upkg.Node] }  -- deps before dependents
+
+upkg.plan : upkg.Pkg -> {Exception} upkg.Plan
+upkg.plan pkg = upkg.Plan.Plan (at1 (upkg.plan.go ([], Set.empty) pkg))
+
+upkg.plan.fetchNode :
+  ([upkg.Node], Set Text) -> Text -> Text -> Text
+    -> {Exception} ([upkg.Node], Set Text)
+upkg.plan.fetchNode acc fname url sri = match acc with
+  (nodes, seen) ->
+    if Set.contains fname seen then acc
+    else
+      bash = upkg.index.get "bash"
+      curl = upkg.index.get "curl"
+      cacert = upkg.index.get "cacert"
+      script =
+        "export SSL_CERT_FILE=" ++ upkg.Pinned.out cacert
+          ++ "/etc/ssl/certs/ca-bundle.crt; " ++ upkg.Pinned.out curl
+          ++ "/bin/curl --fail --location --output \"$out\" " ++ url
+      node =
+        upkg.Node.Node
+          fname
+          (upkg.Pinned.out bash ++ "/bin/bash")
+          (upkg.Action.Script script)
+          []
+          [ (upkg.Ref.Path (upkg.Pinned.drv bash), upkg.Pinned.output bash)
+          , (upkg.Ref.Path (upkg.Pinned.drv curl), upkg.Pinned.output curl)
+          , (upkg.Ref.Path (upkg.Pinned.drv cacert), upkg.Pinned.output cacert)
+          ]
+          (Some sri)
+      (nodes :+ node, Set.insert fname seen)
+
+-- Resolve a dep list purely: emit nodes for local/fetch deps,
+-- symbolic subs and input refs for all of them. Shared by the Pkg
+-- and UPkg planners.
+upkg.plan.deps :
+  ([upkg.Node], Set Text) -> [upkg.Dep]
+    -> {Exception}
+        ([upkg.Node], Set Text, [(Text, upkg.Ref)], [(upkg.Ref, Text)])
+upkg.plan.deps acc deps = match acc with
+  (nodes, seen) ->
+    step = cases (ns, sn, subs, ins), dep -> match dep with
+      upkg.Dep.Local p ->
+        (ns2, sn2) = upkg.plan.go (ns, sn) p
+        pn = upkg.Pkg.name p
+        ( ns2, sn2
+        , subs :+ (pn, upkg.Ref.Output pn)
+        , ins :+ (upkg.Ref.Drv pn, "out")
+        )
+      upkg.Dep.LocalU up ->
+        (ns2, sn2) = upkg.plan.goU (ns, sn) up
+        pn = upkg.UPkg.name up
+        ( ns2, sn2
+        , subs :+ (pn, upkg.Ref.Output pn)
+        , ins :+ (upkg.Ref.Drv pn, "out")
+        )
+      upkg.Dep.Nixpkgs attr ->
+        pin = upkg.index.get attr
+        ( ns, sn
+        , subs :+ (attr, upkg.Ref.Path (upkg.Pinned.out pin))
+        , ins :+ (upkg.Ref.Path (upkg.Pinned.drv pin), upkg.Pinned.output pin)
+        )
+      upkg.Dep.Fetch fname url sri ->
+        (ns2, sn2) = upkg.plan.fetchNode (ns, sn) fname url sri
+        ( ns2, sn2
+        , subs :+ (fname, upkg.Ref.Output fname)
+        , ins :+ (upkg.Ref.Drv fname, "out")
+        )
+    List.foldLeft step (nodes, seen, [], []) deps
+
+upkg.plan.go :
+  ([upkg.Node], Set Text) -> upkg.Pkg
+    -> {Exception} ([upkg.Node], Set Text)
+upkg.plan.go acc pkg = match pkg with
+  upkg.Pkg.Pkg name script deps -> match acc with
+    (nodes, seen) ->
+      if Set.contains name seen then acc
+      else
+        (nodes2, seen2, subs, ins) =
+          upkg.plan.deps (nodes, Set.insert name seen) deps
+        bash = upkg.index.get "bash"
+        node =
+          upkg.Node.Node
+            name
+            (upkg.Pinned.out bash ++ "/bin/bash")
+            (upkg.Action.Script script)
+            subs
+            (ins :+ (upkg.Ref.Path (upkg.Pinned.drv bash), upkg.Pinned.output bash))
+            None
+        (nodes2 :+ node, seen2)
+
+-- Plan a Unison-built package: same dep resolution, ucm as the
+-- builder, the build closure carried as a value.
+upkg.plan.goU :
+  ([upkg.Node], Set Text) -> upkg.UPkg
+    -> {Exception} ([upkg.Node], Set Text)
+upkg.plan.goU acc up = match up with
+  upkg.UPkg.UPkg name build deps -> match acc with
+    (nodes, seen) ->
+      if Set.contains name seen then acc
+      else
+        (nodes2, seen2, subs, ins) =
+          upkg.plan.deps (nodes, Set.insert name seen) deps
+        ucm = upkg.index.get "unison-ucm"
+        node =
+          upkg.Node.Node
+            name
+            (upkg.Pinned.out ucm ++ "/bin/ucm")
+            (upkg.Action.Closure build)
+            subs
+            (ins
+              :+ (upkg.Ref.Path (upkg.Pinned.drv ucm), upkg.Pinned.output ucm))
+            None
+        (nodes2 :+ node, seen2)
+
+upkg.planU : upkg.UPkg -> {Exception} upkg.Plan
+upkg.planU up = upkg.Plan.Plan (at1 (upkg.plan.goU ([], Set.empty) up))
+
+-- Fold the plan into the daemon: add each drv, learn its path,
+-- resolve downstream references. Returns the root drv path.
+-- What submit has learned about a planned node: its drv path and
+-- the text dependents splice for its output (a placeholder for CA
+-- nodes, the literal fixed path for FODs).
+type upkg.Built = { drv : Text, out : Text }
+
+upkg.submit : upkg.Plan -> {IO, Exception} Text
+upkg.submit p = match p with
+  upkg.Plan.Plan nodes ->
+    look = acc -> n -> match Map.get n acc with
+      Some b -> b
+      None -> bug ("plan out of order", n)
+    step = acc -> cases
+      upkg.Node.Node name builder action subs ins fixed ->
+        resolveDrv = cases
+          upkg.Ref.Path t -> t
+          upkg.Ref.Drv n -> upkg.Built.drv (look acc n)
+          upkg.Ref.Output n -> upkg.Built.drv (look acc n)
+        resolveOut = cases
+          upkg.Ref.Path t -> t
+          upkg.Ref.Drv n -> upkg.Built.drv (look acc n)
+          upkg.Ref.Output n -> upkg.Built.out (look acc n)
+        depDrvs = List.map (cases (ref, on) -> (resolveDrv ref, on)) ins
+        drvPath = match action with
+          upkg.Action.Script script ->
+            script' =
+              List.foldLeft
+                (s -> cases (tok, ref) ->
+                  Text.replaceAll ("@" ++ tok ++ "@") (resolveOut ref) s)
+                script
+                subs
+            (outEnv, outsJson) = match fixed with
+              Some sri -> ("", upkg.fixedOutputs sri)
+              None -> (upkg.placeholder "out", upkg.caOutputs)
+            upkg.addDrv
+              (upkg.drvJson' name builder script' depDrvs outEnv outsJson)
+          upkg.Action.Closure build ->
+            runnerFile = upkg.envOr "UPKG_RUNNER" ".ucm-compiled/runner.uc"
+            runnerPath =
+              if Text.startsWith "/nix/store/" runnerFile then runnerFile
+              else
+                upkg.chomp
+                  (upkg.nix
+                    ["store", "add", "--mode", "flat", runnerFile]
+                    "")
+            scriptFile =
+              upkg.envOr "TMPDIR" "/tmp" ++ "/upkg-script-" ++ name ++ ".uv"
+            writeFile (FilePath scriptFile) (upkg.ship build)
+            uvPath =
+              upkg.chomp
+                (upkg.nix ["store", "add", "--mode", "flat", scriptFile] "")
+            pathEnv =
+              Text.join
+                ":"
+                (List.map (cases (_, ref) -> resolveOut ref ++ "/bin") subs)
+            depEnvs =
+              List.map (cases (n, ref) -> ("dep_" ++ n, resolveOut ref)) subs
+            envs =
+              [("PATH", pathEnv), ("out", upkg.placeholder "out")] ++ depEnvs
+            upkg.addDrv
+              (upkg.drvJsonU
+                name
+                builder
+                ["run.compiled", runnerPath, uvPath]
+                envs
+                depDrvs
+                [runnerPath, uvPath])
+        outText = match fixed with
+          Some _ ->
+            upkg.chomp
+              (upkg.exec "nix-store" ["--query", "--outputs", drvPath] "")
+          None -> upkg.upstreamPlaceholder drvPath "out"
+        printLine ("  drv " ++ name ++ " -> " ++ drvPath)
+        Map.put name (upkg.Built.Built drvPath outText) acc
+    final = List.foldLeft step Map.empty nodes
+    match List.last nodes with
+      Some n -> upkg.Built.drv (look final (upkg.Node.name n))
+      None -> Exception.raise (Generic.failure "empty plan" ())
+
+upkg.realise : upkg.Pkg -> {IO, Exception} Text
+upkg.realise pkg = upkg.submit (upkg.plan pkg)
+upkg.realiseU : upkg.UPkg -> {IO, Exception} Text
+upkg.realiseU up = upkg.submit (upkg.planU up)

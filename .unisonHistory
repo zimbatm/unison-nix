@@ -1,100 +1,100 @@
 compile upkg.Sh.runner .ucm-compiled/runner
-compile pkgs.test.main .ucm-compiled/test
-compile pkgs.main .ucm-compiled/upkg
+compile site.test.main .ucm-compiled/test
+compile site.main .ucm-compiled/upkg
+update
+load src/site.u
 update
 load src/pkgs.u
 update
-load src/upkg.u
+load src/upkg/06-cargo.u
+update
+load src/upkg/05-drv.u
+update
+load src/upkg/04-plan.u
+update
+load src/upkg/03-ship.u
+update
+load src/upkg/02-index.u
+update
+load src/upkg/01-model.u
+update
+load src/upkg/00-core.u
+find Exception.catch
+find Exception.toEither
 compile upkg.Sh.runner .ucm-compiled/runner
-compile pkgs.test.main .ucm-compiled/test
-compile pkgs.main .ucm-compiled/upkg
+compile site.test.main .ucm-compiled/test
+compile site.main .ucm-compiled/upkg
+update
+load src/site.u
 update
 load src/pkgs.u
 update
-load src/upkg.u
+load src/upkg/06-cargo.u
+update
+load src/upkg/05-drv.u
+update
+load src/upkg/04-plan.u
+update
+load src/upkg/03-ship.u
+update
+load src/upkg/02-index.u
+update
+load src/upkg/01-model.u
+update
+load src/upkg/00-core.u
 compile upkg.Sh.runner .ucm-compiled/runner
-compile pkgs.test.main .ucm-compiled/test
-compile pkgs.main .ucm-compiled/upkg
+compile site.test.main .ucm-compiled/test
+compile site.main .ucm-compiled/upkg
+update
+load src/site.u
 update
 load src/pkgs.u
 update
-load src/upkg.u
-delete.term upkg.test.main
-delete.term upkg.dispatch
-delete.term upkg.main
+load src/upkg/06-cargo.u
 update
-load src/pkgs.u
+load src/upkg/05-drv.u
 update
-load src/upkg.u
-compile upkg.Sh.runner .ucm-compiled/runner
-compile upkg.test.main .ucm-compiled/test
-compile upkg.main .ucm-compiled/upkg
+load src/upkg/04-plan.u
 update
-load src/upkg.u
-compile upkg.Sh.runner .ucm-compiled/runner
-compile upkg.test.main .ucm-compiled/test
-compile upkg.main .ucm-compiled/upkg
+load src/upkg/03-ship.u
 update
-load src/upkg.u
+load src/upkg/02-index.u
 update
-load src/upkg.u
-compile upkg.Sh.runner .ucm-compiled/runner
-compile upkg.test.main .ucm-compiled/test
-compile upkg.main .ucm-compiled/upkg
+load src/upkg/01-model.u
 update
-load src/upkg.u
-find Char.fromNat
-compile upkg.Sh.runner .ucm-compiled/runner
-compile upkg.test.main .ucm-compiled/test
-compile upkg.main .ucm-compiled/upkg
-update
-load src/upkg.u
+load src/upkg/00-core.u
+delete.term upkg.assoc.lookup
 update
 load src/nixpkgs-index.u
 compile upkg.Sh.runner .ucm-compiled/runner
-compile upkg.test.main .ucm-compiled/test
-compile upkg.main .ucm-compiled/upkg
+compile site.test.main .ucm-compiled/test
+compile site.main .ucm-compiled/upkg
 update
-load src/upkg.u
-find Bytes.fromBase
-find toBase64
-find fromHex
-compile upkg.Sh.runner .ucm-compiled/runner
-compile upkg.test.main .ucm-compiled/test
-compile upkg.main .ucm-compiled/upkg
+load src/site.u
 update
-load src/upkg.u
+load src/pkgs.u
 update
-load src/upkg.u
-delete.term upkg.realise.go
-delete.term upkg.resolveDeps
-delete.term upkg.fetch
-delete.namespace bench
-branch.delete /update-main
-switch /main
+load src/upkg/06-cargo.u
 update
-load src/upkg.u
-delete.namespace bench
-branch.delete /update-main
-switch /main
+load src/upkg/05-drv.u
 update
-load src/upkg.u
-find : k -> Map k v -> Boolean
-find Map.fromList
-find Map.alter
-find Map.put
-find Set.insert
-find Set.contains
-find test.verify
-find Decoder.run
-find Map.get
-find Decoder
-find List.find
-find : Text -> Map Text v -> Optional v
-compile upkg.Sh.runner .ucm-compiled/runner
-compile upkg.test.main .ucm-compiled/test
-compile upkg.main .ucm-compiled/upkg
+load src/upkg/04-plan.u
 update
-load src/upkg.u
-project.rename upkg
-move.namespace upkgs upkg
+load src/upkg/03-ship.u
+update
+load src/upkg/02-index.u
+update
+load src/upkg/01-model.u
+update
+load src/upkg/00-core.u
+view pkgs.unginx
+delete.type upkg.Secret
+delete.type upkg.NginxConfig
+delete.namespace upkg.Secret
+delete.namespace upkg.NginxConfig
+delete.namespace upkg.nginx
+delete.term upkg.mkNginx
+delete.term pkgs.self.script
+delete.term pkgs.self
+delete.term pkgs.unginx
+view pkgs.self

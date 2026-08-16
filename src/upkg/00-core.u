@@ -1,0 +1,154 @@
+-- upkg: Unison as a frontend to Nix.
+--
+-- Packages are plain Unison values. We compute Nix derivations as
+-- JSON, feed them to `nix derivation add`, and build the returned
+-- .drv path with `nix build`. The Nix expression language is never
+-- involved.
+--
+-- All outputs are floating content-addressed (ca-derivations). The
+-- daemon computes output paths, so we never implement Nix's store
+-- path hashing. We only need two placeholder hashes, verified
+-- against Nix 2.35:
+--   own output:  nixbase32(sha256("nix-output:<output>"))
+--   dep output:  nixbase32(sha256("nix-upstream-output:<drvhash>:<name>"))
+-- ----------------------------------------------------------------
+-- ----------------------------------------------------------------
+-- Nix base32. Not RFC 4648: custom alphabet, bits read in reverse.
+
+upkg.base32.alphabet : [Char]
+upkg.base32.alphabet = Text.toCharList "0123456789abcdfghijklmnpqrsvwxyz"
+
+upkg.base32.encode : Bytes -> Text
+upkg.base32.encode bs =
+  n = Bytes.size bs
+  byte = j -> Optional.getOrElse 0 (Bytes.at j bs)
+  len = Nat.diff (n * 8) 1 / 5 + 1
+  charFor = i -> let
+    b = i * 5
+    j = b / 8
+    bit = mod b 8
+    hi = if j + 1 < n then Nat.shiftLeft (byte (j + 1)) (Nat.diff 8 bit) else 0
+    c = Nat.and (Nat.or (Nat.shiftRight (byte j) bit) hi) 31
+    Optional.getOrElse ?0 (List.at c upkg.base32.alphabet)
+  List.range 0 len
+    |> List.map charFor
+    |> List.reverse
+    |> Text.fromCharList
+
+upkg.sha256 : Text -> Bytes
+upkg.sha256 t =
+  crypto.hashBytes crypto.HashAlgorithm.Sha2_256 (Text.toUtf8 t)
+
+-- Placeholder for one of our own outputs ($out in build scripts).
+upkg.placeholder : Text -> Text
+upkg.placeholder output =
+  "/" ++ upkg.base32.encode (upkg.sha256 ("nix-output:" ++ output))
+
+-- Placeholder for the output of a dependency .drv. Nix rewrites it
+-- to the real store path once the dependency is built.
+upkg.upstreamPlaceholder : Text -> Text -> Text
+upkg.upstreamPlaceholder drvPath output =
+  hashPart = Text.take 32 (Text.drop 11 drvPath)
+  base = Text.drop 44 drvPath
+  drvName = Text.take (Nat.diff (Text.size base) 4) base
+  refName = if output == "out" then drvName else drvName ++ "-" ++ output
+  "/" ++ upkg.base32.encode
+    (upkg.sha256 ("nix-upstream-output:" ++ hashPart ++ ":" ++ refName))
+-- ----------------------------------------------------------------
+-- ----------------------------------------------------------------
+-- Talking to Nix.
+
+upkg.exec : Text -> [Text] -> Text -> {IO, Exception} Text
+upkg.exec cmd args input =
+  (stdin, stdout, stderr, proc) = IO.Process.start cmd args
+  Handle.putText stdin input
+  Handle.close stdin
+  out = Handle.getText stdout
+  err = Handle.getText stderr
+  code = IO.Process.wait proc
+  match code with
+    0 -> out
+    _ ->
+      Exception.raise
+        (Generic.failure
+          ("exec failed (" ++ Nat.toText code ++ "): " ++ cmd ++ " "
+            ++ Text.join " " args ++ "\n" ++ err)
+          ())
+
+upkg.nix : [Text] -> Text -> {IO, Exception} Text
+upkg.nix args input =
+  upkg.exec
+    "nix"
+    (["--extra-experimental-features", "nix-command ca-derivations"] ++ args)
+    input
+
+upkg.chomp : Text -> Text
+upkg.chomp = Text.replaceAll "\n" ""
+
+upkg.addDrv : Text -> {IO, Exception} Text
+upkg.addDrv j = upkg.chomp (upkg.nix ["derivation", "add"] j)
+-- ----------------------------------------------------------------
+-- Generic helpers.
+
+upkg.lookup : Text -> [(Text, a)] -> Optional a
+upkg.lookup k =
+  List.findMap (cases (k2, v) -> if k2 == k then Some v else None)
+-- ----------------------------------------------------------------
+-- Small Json access kit. The lib exposes the constructors, so this
+-- is all we need instead of a decoder framework.
+
+upkg.json.get : Text -> Json -> {Exception} Json
+upkg.json.get k j = match j with
+  Json.Object kvs -> match upkg.lookup k kvs with
+    Some v -> v
+    None -> Exception.raise (Generic.failure ("json: missing key " ++ k) ())
+  _ -> Exception.raise (Generic.failure ("json: not an object at " ++ k) ())
+
+upkg.json.opt : Text -> Json -> Optional Json
+upkg.json.opt k j = match j with
+  Json.Object kvs -> upkg.lookup k kvs
+  _ -> None
+
+upkg.json.asText : Json -> {Exception} Text
+upkg.json.asText j = match j with
+  Json.Text t -> t
+  _ -> Exception.raise (Generic.failure "json: not a string" ())
+
+upkg.json.asArray : Json -> {Exception} [Json]
+upkg.json.asArray j = match j with
+  Json.Array xs -> xs
+  _ -> Exception.raise (Generic.failure "json: not an array" ())
+
+upkg.json.asObject : Json -> {Exception} [(Text, Json)]
+upkg.json.asObject j = match j with
+  Json.Object kvs -> kvs
+  _ -> Exception.raise (Generic.failure "json: not an object" ())
+
+-- Rewrite every string leaf. Keys stay as they are.
+upkg.json.mapText : (Text -> Text) -> Json -> Json
+upkg.json.mapText f j = match j with
+  Json.Text t -> Json.Text (f t)
+  Json.Array xs -> Json.Array (List.map (upkg.json.mapText f) xs)
+  Json.Object kvs ->
+    Json.Object
+      (List.map (cases (k, v) -> (k, upkg.json.mapText f v)) kvs)
+  _ -> j
+
+-- Upsert a key in a Json object. Non-objects pass through.
+upkg.json.set : Text -> Json -> Json -> Json
+upkg.json.set k v j = match j with
+  Json.Object kvs ->
+    if List.any (cases (k2, _) -> k2 Text.== k) kvs
+    then
+      Json.Object
+        (List.map
+          (cases (k2, v2) -> if k2 Text.== k then (k2, v) else (k2, v2))
+          kvs)
+    else Json.Object (kvs :+ (k, v))
+  _ -> j
+
+-- Read an env var with a fallback; missing is not an error.
+upkg.envOr : Text -> Text -> {IO} Text
+upkg.envOr k default = match Exception.catch (do IO.getEnv k) with
+  Right v -> v
+  Left _ -> default

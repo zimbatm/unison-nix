@@ -1,0 +1,204 @@
+-- ----------------------------------------------------------------
+-- The builder dialect, ability first: the package model's UPkg
+-- carries an {Sh} closure, so Sh and the model share a file.
+
+ability upkg.Sh where
+  run : Text -> [Text] -> ()
+  cd : Text -> ()
+  out : Text
+  dep : Text -> Text
+
+upkg.Sh.build : '{IO, Exception, upkg.Sh} a -> {IO, Exception} a
+upkg.Sh.build prog =
+  h = cases
+    { r } -> r
+    { upkg.Sh.run cmd args -> k } ->
+      printLine ("$ " ++ cmd ++ " " ++ Text.join " " args)
+      code = IO.Process.call cmd args
+      match code with
+        0 -> handle k () with h
+        _ ->
+          Exception.raise
+            (Generic.failure
+              (cmd ++ " failed with exit code " ++ Nat.toText code)
+              ())
+    { upkg.Sh.cd p -> k } ->
+      FilePath.setCurrentDirectory (FilePath p)
+      handle k () with h
+    { upkg.Sh.out -> k } -> handle k (IO.getEnv "out") with h
+    { upkg.Sh.dep n -> k } -> handle k (IO.getEnv ("dep_" ++ n)) with h
+  handle !prog with h
+-- ----------------------------------------------------------------
+-- ----------------------------------------------------------------
+-- The package model. This is the whole "language": a package is a
+-- name, a shell script, and dependencies. A dependency is either
+-- another Pkg or a nixpkgs attribute. Scripts refer to a
+-- dependency's output as @depname@ / @attr@.
+--
+-- Nixpkgs deps work because their derivations are input-addressed:
+-- output paths are fixed at eval time, so we splice the literal
+-- store path and list the .drv in inputs. No placeholder needed.
+
+-- Fetch is name, url, SRI hash. It becomes a fixed-output
+-- derivation: the sandbox gets network, the daemon checks the hash.
+
+type upkg.Dep
+  = Local upkg.Pkg
+  | LocalU upkg.UPkg
+  | Nixpkgs Text
+  | Fetch Text Text Text
+
+type upkg.Pkg = { name : Text, script : Text, deps : [upkg.Dep] }
+
+upkg.system : Text
+upkg.system = "x86_64-linux"
+
+-- Output sections. Floating CA: the daemon computes the path.
+-- Fixed: we give the SRI hash of the file, the daemon derives the
+-- path from it.
+
+upkg.caOutputs : Json
+upkg.caOutputs =
+  Json.object
+    [ ( "out"
+      , Json.object
+          [ ("hashAlgo", Json.text "sha256")
+          , ("method", Json.text "nar")
+          ]
+      )
+    ]
+
+upkg.fixedOutputs : Text -> Json
+upkg.fixedOutputs sri =
+  Json.object
+    [ ( "out"
+      , Json.object [("hash", Json.text sri), ("method", Json.text "flat")]
+      )
+    ]
+
+-- Group (drvPath, outputName) pairs by drvPath so the same .drv
+-- never appears twice in inputs.drvs.
+upkg.groupDeps : [(Text, Text)] -> [(Text, [Text])]
+upkg.groupDeps ps =
+  union : [Text] -> [Text] -> [Text]
+  union = xs -> ys -> let
+    List.foldLeft
+      (acc -> o -> if List.any (o2 -> o2 Text.== o) acc then acc else acc :+ o)
+      xs
+      ys
+  add = m -> cases (drvPath, outName) ->
+    Map.putWith union drvPath [outName] m
+  Map.toList (List.foldLeft add Map.empty ps)
+
+-- With structured attrs the daemon does not export env vars. The
+-- builder reads .attrs.sh instead. This prelude defines $out (and
+-- any future outputs) for the package script. Needs bash: .attrs.sh
+-- uses declare -A, which busybox sh cannot parse.
+upkg.attrsPrelude : Text
+upkg.attrsPrelude =
+  Text.join
+    "\n"
+    [ ". \"$NIX_ATTRS_SH_FILE\""
+    , "for o in \"${!outputs[@]}\"; do export \"$o=${outputs[$o]}\"; done"
+    , ""
+    ]
+
+-- Derivation JSON, schema version 4 (Nix 2.35). Structured attrs
+-- out of the box: env carries only the output paths, everything
+-- else lives in structuredAttrs / the .attrs files. Deps are
+-- (drvPath, outputName) pairs. outEnv is $out as stored in env: a
+-- floating-CA placeholder, or "" for fixed outputs -- the daemon
+-- replaces "" with the computed path on `derivation add`.
+upkg.drvJson' : Text -> Text -> Text -> [(Text, Text)] -> Text -> Json -> Text
+upkg.drvJson' name builder script depDrvs outEnv outputsJson =
+  inputDrv = cases
+    (drvPath, outNames) ->
+      ( Text.drop 11 drvPath
+      , Json.object
+          [ ("dynamicOutputs", Json.object [])
+          , ("outputs", Json.array (List.map Json.text outNames))
+          ]
+      )
+  Json.toText
+    (Json.object
+      [ ( "args"
+        , Json.array
+            [Json.text "-c", Json.text (upkg.attrsPrelude ++ script)]
+        )
+      , ("builder", Json.text builder)
+      , ("env", Json.object [("out", Json.text outEnv)])
+      , ( "inputs"
+        , Json.object
+            [ ( "drvs"
+              , Json.object (List.map inputDrv (upkg.groupDeps depDrvs))
+              )
+            , ("srcs", Json.array [])
+            ]
+        )
+      , ("name", Json.text name)
+      , ("outputs", outputsJson)
+      , ( "structuredAttrs"
+        , Json.object
+            [ ("builder", Json.text builder)
+            , ("name", Json.text name)
+            , ("outputs", Json.array [Json.text "out"])
+            , ("system", Json.text upkg.system)
+            ]
+        )
+      , ("system", Json.text upkg.system)
+      , ("version", Json.nat 4)
+      ])
+
+upkg.drvJson : Text -> Text -> Text -> [(Text, Text)] -> Text
+upkg.drvJson name builder script depDrvs =
+  upkg.drvJson' name builder script depDrvs (upkg.placeholder "out")
+    upkg.caOutputs
+-- A package built by Unison. The build script is a first-class
+-- value, not a named term: realiseU ships the closure to the
+-- sandbox the way distributed Unison ships closures to remote
+-- nodes -- Value.serialize for the value, Code.serialize for the
+-- transitive code of its dependencies. One generic runner (see
+-- upkg.Sh.runner) is compiled to bytecode once; it caches the
+-- shipped code and loads the value.
+type upkg.UPkg =
+  { name : Text
+  , build : '{IO, Exception, upkg.Sh} ()
+  , deps : [upkg.Dep]
+  }
+-- Derivation JSON for a ucm-run builder: explicit args, env and
+-- inputs.srcs, no structured attrs (env is the API here).
+upkg.drvJsonU :
+  Text -> Text -> [Text] -> [(Text, Text)] -> [(Text, Text)] -> [Text]
+    -> Text
+upkg.drvJsonU name builder args envs depDrvs srcs =
+  inputDrv = cases
+    (drvPath, outNames) ->
+      ( Text.drop 11 drvPath
+      , Json.object
+          [ ("dynamicOutputs", Json.object [])
+          , ("outputs", Json.array (List.map Json.text outNames))
+          ]
+      )
+  Json.toText
+    (Json.object
+      [ ("args", Json.array (List.map Json.text args))
+      , ("builder", Json.text builder)
+      , ( "env"
+        , Json.object
+            (List.map (cases (k, v) -> (k, Json.text v)) envs)
+        )
+      , ( "inputs"
+        , Json.object
+            [ ( "drvs"
+              , Json.object (List.map inputDrv (upkg.groupDeps depDrvs))
+              )
+            , ( "srcs"
+              , Json.array (List.map (s -> Json.text (Text.drop 11 s)) srcs)
+              )
+            ]
+        )
+      , ("name", Json.text name)
+      , ("outputs", upkg.caOutputs)
+      , ("system", Json.text upkg.system)
+      , ("version", Json.nat 4)
+      ])

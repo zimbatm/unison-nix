@@ -1,0 +1,253 @@
+-- ----------------------------------------------------------------
+-- ----------------------------------------------------------------
+-- Typed derivations. `nix derivation show` emits the same schema
+-- version 4 JSON that `nix derivation add` accepts, so a nixpkgs
+-- derivation round-trips through a plain Unison value. An override
+-- is then a pure Drv -> Drv function. No overrideAttrs, no
+-- fixpoints, no mkDerivation magic.
+
+-- An output is input-addressed (basename of the store path, fixed
+-- at eval time), floating CA (daemon computes the path), or fixed
+-- (SRI hash + method).
+type upkg.Out = Addressed Text | Floating | Fixed Text Text
+
+type upkg.Drv =
+  { name : Text
+  , system : Text
+  , builder : Text
+  , args : [Text]
+  , env : [(Text, Text)]
+  , inputDrvs : [(Text, [Text])]
+  , inputSrcs : [Text]
+  , outputs : [(Text, upkg.Out)]
+  , attrs : Optional Json
+  }
+
+upkg.Drv.fromJson : Json -> {Exception} upkg.Drv
+upkg.Drv.fromJson j =
+  texts = xs -> List.map upkg.json.asText (upkg.json.asArray xs)
+  pairText = cases (k, v) -> (k, upkg.json.asText v)
+  out = o -> match upkg.json.opt "path" o with
+    Some p -> upkg.Out.Addressed (upkg.json.asText p)
+    None -> match upkg.json.opt "hash" o with
+      Some h ->
+        upkg.Out.Fixed
+          (upkg.json.asText h)
+          (upkg.json.asText (upkg.json.get "method" o))
+      None -> upkg.Out.Floating
+  inputs = upkg.json.get "inputs" j
+  drvIn = cases (k, v) -> (k, texts (upkg.json.get "outputs" v))
+  upkg.Drv.Drv
+    (upkg.json.asText (upkg.json.get "name" j))
+    (upkg.json.asText (upkg.json.get "system" j))
+    (upkg.json.asText (upkg.json.get "builder" j))
+    (texts (upkg.json.get "args" j))
+    (List.map pairText (upkg.json.asObject (upkg.json.get "env" j)))
+    (List.map drvIn (upkg.json.asObject (upkg.json.get "drvs" inputs)))
+    (texts (upkg.json.get "srcs" inputs))
+    (List.map
+      (cases (k, v) -> (k, out v))
+      (upkg.json.asObject (upkg.json.get "outputs" j)))
+    (upkg.json.opt "structuredAttrs" j)
+
+upkg.Drv.toJson : upkg.Drv -> Json
+upkg.Drv.toJson d = match d with
+  upkg.Drv.Drv name system builder args env inDrvs inSrcs outputs attrs ->
+    outJson = o -> match o with
+      upkg.Out.Addressed p -> Json.object [("path", Json.text p)]
+      upkg.Out.Floating ->
+        Json.object
+          [("hashAlgo", Json.text "sha256"), ("method", Json.text "nar")]
+      upkg.Out.Fixed h m ->
+        Json.object [("hash", Json.text h), ("method", Json.text m)]
+    inDrv = cases
+      (k, outs) ->
+        ( k
+        , Json.object
+            [ ("dynamicOutputs", Json.object [])
+            , ("outputs", Json.array (List.map Json.text outs))
+            ]
+        )
+    kv = cases (k, v) -> (k, Json.text v)
+    base =
+      [ ("args", Json.array (List.map Json.text args))
+      , ("builder", Json.text builder)
+      , ("env", Json.object (List.map kv env))
+      , ( "inputs"
+        , Json.object
+            [ ("drvs", Json.object (List.map inDrv inDrvs))
+            , ("srcs", Json.array (List.map Json.text inSrcs))
+            ]
+        )
+      , ("name", Json.text name)
+      , ( "outputs"
+        , Json.object
+            (List.map (cases (k, v) -> (k, outJson v)) outputs)
+        )
+      ]
+    withAttrs = match attrs with
+      Some a -> base :+ ("structuredAttrs", a)
+      None -> base
+    Json.object
+      (withAttrs ++ [("system", Json.text system), ("version", Json.nat 4)])
+
+-- Turn an input-addressed derivation into a floating CA one. The
+-- old output paths become placeholders everywhere, and the daemon
+-- computes fresh paths at build time. This is what makes a mutated
+-- nixpkgs derivation buildable: its identity changed, so its old
+-- output paths are lies, and CA sidesteps recomputing them.
+upkg.Drv.caify : upkg.Drv -> upkg.Drv
+upkg.Drv.caify d =
+  subs =
+    List.foldLeft
+      (acc -> cases
+        (oname, upkg.Out.Addressed path) ->
+          acc :+ ("/nix/store/" ++ path, upkg.placeholder oname)
+        _ -> acc)
+      []
+      (upkg.Drv.outputs d)
+  swap = t -> let
+    List.foldLeft
+      (s -> cases (old, new) -> Text.replaceAll old new s)
+      t
+      subs
+  d
+    |> upkg.Drv.env.modify
+         (List.map (cases (k, v) -> (k, swap v)))
+    |> upkg.Drv.args.modify (List.map swap)
+    |> upkg.Drv.attrs.modify (Optional.map (upkg.json.mapText swap))
+    |> upkg.Drv.outputs.modify
+         (List.map
+           (cases
+             (k, upkg.Out.Fixed h m) -> (k, upkg.Out.Fixed h m)
+             (k, _) -> (k, upkg.Out.Floating)))
+
+upkg.Drv.setEnv : Text -> Text -> upkg.Drv -> upkg.Drv
+upkg.Drv.setEnv k v d =
+  upsert = kvs -> let
+    if List.any (cases (k2, _) -> k2 Text.== k) kvs
+    then
+      List.map
+        (cases (k2, v2) -> if k2 Text.== k then (k2, v) else (k2, v2))
+        kvs
+    else kvs :+ (k, v)
+  upkg.Drv.env.modify upsert d
+
+upkg.Drv.setAttr : Text -> Json -> upkg.Drv -> upkg.Drv
+upkg.Drv.setAttr k v d =
+  upkg.Drv.attrs.modify (Optional.map (upkg.json.set k v)) d
+
+upkg.Drv.rename : Text -> upkg.Drv -> upkg.Drv
+upkg.Drv.rename n d =
+  d |> upkg.Drv.name.set n |> upkg.Drv.setAttr "name" (Json.text n)
+
+-- Import one nixpkgs derivation as a typed value.
+upkg.importDrv : Text -> {IO, Exception} upkg.Drv
+upkg.importDrv attr =
+  raw = upkg.nix ["derivation", "show", "nixpkgs#" ++ attr] ""
+  j = Json.fromText raw
+  match upkg.json.asObject (upkg.json.get "derivations" j) with
+    [(_, dj)] -> upkg.Drv.fromJson dj
+    _ ->
+      Exception.raise
+        (Generic.failure ("expected one derivation: " ++ attr) ())
+
+upkg.Drv.realise : upkg.Drv -> {IO, Exception} Text
+upkg.Drv.realise d = upkg.addDrv (Json.toText (upkg.Drv.toJson d))
+-- ----------------------------------------------------------------
+-- ----------------------------------------------------------------
+-- Deep overrides: import a whole drv closure, override any node,
+-- rewrite everything downstream. What nixpkgs does with
+-- overrideAttrs and evaluator fixpoints is a pure graph
+-- transformation here. Unaffected subgraphs keep their
+-- input-addressed drvs and literal paths, so the binary cache
+-- still serves them.
+
+-- Closure keyed by drv basename, from `nix derivation show -r`.
+upkg.importClosure : Text -> {IO, Exception} (Map Text upkg.Drv)
+upkg.importClosure drvPath =
+  raw = upkg.nix ["derivation", "show", "-r", drvPath] ""
+  j = Json.fromText raw
+  ds = upkg.json.asObject (upkg.json.get "derivations" j)
+  Map.fromList (List.map (cases (b, dj) -> (b, upkg.Drv.fromJson dj)) ds)
+
+-- Does node b transitively depend on a target? Memoized; nodes
+-- outside the closure map count as unaffected.
+upkg.closure.mark :
+  Map Text upkg.Drv -> (Text -> Boolean) -> Map Text Boolean -> Text
+    -> (Map Text Boolean, Boolean)
+upkg.closure.mark closure isTarget cache b =
+  match Map.get b cache with
+    Some r -> (cache, r)
+    None ->
+      if isTarget b then (Map.put b true cache, true)
+      else match Map.get b closure with
+        None -> (Map.put b false cache, false)
+        Some d ->
+          step = cases (c, hit), (i, _) ->
+            (c2, r) = upkg.closure.mark closure isTarget c i
+            (c2, hit || r)
+          (cache2, hit) =
+            List.foldLeft step (cache, false) (upkg.Drv.inputDrvs d)
+          (Map.put b hit cache2, hit)
+
+upkg.closure.markAll :
+  Map Text upkg.Drv -> Set Text -> Map Text Boolean
+upkg.closure.markAll closure targets =
+  isT = b -> Set.contains b targets
+  List.foldLeft
+    (c -> cases (b, _) -> at1 (upkg.closure.mark closure isT c b))
+    Map.empty
+    (Map.toList closure)
+
+-- Rewrite bottom-up. An affected drv gets: new inputDrvs keys for
+-- its rewritten inputs, upstream placeholders in place of their old
+-- literal output paths, the user override if it is a target, and
+-- CA-ification. Returns the new drv path; the cache maps old
+-- basename -> new drv path.
+upkg.closure.rewrite :
+  Map Text upkg.Drv -> Map Text Boolean -> Set Text
+    -> (upkg.Drv -> upkg.Drv) -> Map Text Text -> Text
+    -> {IO, Exception} (Map Text Text, Text)
+upkg.closure.rewrite closure marks targets f cache b =
+  affected = k -> Map.getOrElse false k marks
+  match Map.get b cache with
+    Some p -> (cache, p)
+    None ->
+      if Boolean.not (affected b) then (cache, "/nix/store/" ++ b)
+      else
+        d = Map.getOrBug b "not in closure" closure
+        step = cases (c, ins, subs), (i, outs) ->
+          if Boolean.not (affected i) then (c, ins :+ (i, outs), subs)
+          else
+            (c2, newPath) =
+              upkg.closure.rewrite closure marks targets f c i
+            iDrv = Map.getOrBug i "not in closure" closure
+            subFor = ss -> cases
+              (oname, upkg.Out.Addressed pth) ->
+                ss
+                  :+ ( "/nix/store/" ++ pth
+                     , upkg.upstreamPlaceholder newPath oname
+                     )
+              _ -> ss
+            subs2 = List.foldLeft subFor subs (upkg.Drv.outputs iDrv)
+            (c2, ins :+ (Text.drop 11 newPath, outs), subs2)
+        (cache2, newIns, subs) =
+          List.foldLeft step (cache, [], []) (upkg.Drv.inputDrvs d)
+        swap = t -> let
+          List.foldLeft
+            (s -> cases (o, n) -> Text.replaceAll o n s)
+            t
+            subs
+        d1 =
+          d
+            |> upkg.Drv.inputDrvs.set newIns
+            |> upkg.Drv.env.modify
+                 (List.map (cases (k, v) -> (k, swap v)))
+            |> upkg.Drv.args.modify (List.map swap)
+            |> upkg.Drv.attrs.modify
+                 (Optional.map (upkg.json.mapText swap))
+        d2 = if Set.contains b targets then f d1 else d1
+        newPath = upkg.Drv.realise (upkg.Drv.caify d2)
+        printLine ("  rewrite " ++ upkg.Drv.name d ++ " -> " ++ newPath)
+        (Map.put b newPath cache2, newPath)

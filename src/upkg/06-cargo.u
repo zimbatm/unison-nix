@@ -1,0 +1,104 @@
+-- ----------------------------------------------------------------
+-- ----------------------------------------------------------------
+-- The Cargo ecosystem, end to end: parse the lockfile purely,
+-- derive one fixed-output derivation per registry crate with the
+-- hash straight from the lockfile (nothing for a human to
+-- maintain), assemble the vendor tree inside the sandbox with a
+-- Unison closure, build offline.
+
+type upkg.cargo.Crate =
+  { name : Text, version : Text, checksum : Optional Text }
+
+-- Minimal parser for the Cargo.lock TOML subset: [[package]]
+-- blocks with name/version/checksum keys. Pure.
+upkg.cargo.parseLock : Text -> [upkg.cargo.Crate]
+upkg.cargo.parseLock lock =
+  quoted = l -> match Text.split ?" l with
+    [_, v, _] -> Some v
+    _ -> None
+  flush = cases (cs, name, ver, sum) -> match (name, ver) with
+    (Some n, Some v) -> cs :+ upkg.cargo.Crate.Crate n v sum
+    _ -> cs
+  step = cases (cs, name, ver, sum), l ->
+    if l Text.== "[[package]]" then
+      (flush (cs, name, ver, sum), None, None, None)
+    else if Text.startsWith "name = " l then (cs, quoted l, ver, sum)
+    else if Text.startsWith "version = " l then (cs, name, quoted l, sum)
+    else if Text.startsWith "checksum = " l then (cs, name, ver, quoted l)
+    else (cs, name, ver, sum)
+  flush (List.foldLeft step ([], None, None, None) (Text.split ?\n lock))
+
+-- Cargo.lock checksums are sha256 hex; FODs want SRI.
+upkg.cargo.sri : Text -> {Exception} Text
+upkg.cargo.sri hex =
+  "sha256-" ++ Text.fromUtf8 (Bytes.toBase64 (Bytes.fromHex hex))
+
+upkg.cargo.crateUrl : Text -> Text -> Text
+upkg.cargo.crateUrl name version =
+  "https://static.crates.io/crates/" ++ name ++ "/" ++ version
+    ++ "/download"
+
+-- A Rust package from a crates.io source tarball plus its
+-- committed Cargo.lock. Registry crates (checksummed entries)
+-- become Fetch deps; the build closure vendors them and runs
+-- cargo offline.
+upkg.cargo.pkg : Text -> Text -> Text -> Text -> {Exception} upkg.UPkg
+upkg.cargo.pkg name version srcSri lock =
+  crates =
+    List.filterMap
+      (cases
+        upkg.cargo.Crate.Crate n v (Some sum) ->
+          if n Text.== name then None else Some (n, v, sum)
+        _ -> None)
+      (upkg.cargo.parseLock lock)
+  srcName = name ++ "-src"
+  crateDeps =
+    List.map
+      (cases (n, v, sum) ->
+        upkg.Dep.Fetch
+          (n ++ "-" ++ v)
+          (upkg.cargo.crateUrl n v)
+          (upkg.cargo.sri sum))
+      crates
+  toolchain =
+    List.map
+      upkg.Dep.Nixpkgs
+      ["cargo", "rustc", "gcc", "gnutar", "gzip", "coreutils"]
+  script = do
+    use upkg.Sh run dep cd
+    out = upkg.Sh.out
+    run "tar" ["xzf", dep srcName]
+    cd (name ++ "-" ++ version)
+    cwd = FilePath.toText !FilePath.getCurrentDirectory
+    run "mkdir" ["-p", "vendor", ".cargo", "cargo-home"]
+    vendorOne = cases (n, v, sum) ->
+      dir = "vendor/" ++ n ++ "-" ++ v
+      run "mkdir" ["-p", dir]
+      run "tar" ["xzf", dep (n ++ "-" ++ v), "--strip-components=1", "-C", dir]
+      writeFileUtf8
+        (FilePath (dir ++ "/.cargo-checksum.json"))
+        ("{\"files\":{},\"package\":\"" ++ sum ++ "\"}")
+    _ = List.map vendorOne crates
+    writeFileUtf8
+      (FilePath ".cargo/config.toml")
+      (Text.join
+        "\n"
+        [ "[source.crates-io]"
+        , "replace-with = \"vendored-sources\""
+        , "[source.vendored-sources]"
+        , "directory = \"" ++ cwd ++ "/vendor\""
+        , ""
+        ])
+    -- No setenv in base yet; coreutils env(1) is the workaround.
+    run
+      "env"
+      [ "CARGO_HOME=" ++ cwd ++ "/cargo-home"
+      , "cargo", "build", "--release", "--offline", "--locked"
+      ]
+    run "mkdir" ["-p", out ++ "/bin"]
+    run "cp" ["target/release/" ++ name, out ++ "/bin/"]
+  upkg.UPkg.UPkg
+    (name ++ "-" ++ version)
+    script
+    (upkg.Dep.Fetch srcName (upkg.cargo.crateUrl name version) srcSri
+      +: (crateDeps ++ toolchain))

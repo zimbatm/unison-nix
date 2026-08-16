@@ -436,11 +436,23 @@ bash.
 
 ## Layout
 
-- `src/upkg.u` — the library: Base32, placeholders, derivation
+- `src/upkg/` — the library, split by concern and loaded in
+  order (a file may only reference what earlier files put in the
+  codebase; mutually recursive types share a file): `00-core.u`
+  (hashing, process, json kit), `01-model.u` (the Sh dialect and
+  the package model), `02-index.u` (the pinned nixpkgs index),
+  `03-ship.u` (closure shipping), `04-plan.u` (pure plan /
+  effectful submit), `05-drv.u` (typed derivations, closure
+  rewriting), `06-cargo.u`. Formerly one file: Base32, placeholders, derivation
   JSON, process handling, nixpkgs eval, graph realisation, a demo
   package set.
-- `src/pkgs.u` — the demo package set and entry points, consuming
-  the library from the codebase.
+- `src/pkgs.u` — the distro layer: the package collection and
+  service builders (mkNginx), no deployment choices.
+- `src/site.u` — the consumer layer: deployment instances
+  (site.web), user environments (site.profile — Unison-built and
+  nixpkgs packages symlinked into one bin/), the CLI, and the
+  quine. The three layers mirror upkg : pkgs : site =
+  Nix : nixpkgs : your configuration.
 - `src/nixpkgs-index.u` — generated pinned index of nixpkgs attrs.
   Synced into the codebase by `run.sh`.
 - `setup.md` — UCM transcript. It creates the codebase and installs
@@ -462,6 +474,7 @@ nix develop          # or: nix shell nixpkgs#unison-ucm
 ./run.sh shout       # build a package with nixpkgs dependencies
 ./run.sh hello       # compile GNU hello from the upstream tarball
 ./run.sh hexyl       # build a real Rust tool from its Cargo.lock
+./run.sh profile     # user environment composing pkgs + nixpkgs
 ./run.sh upkg        # upkg packages itself (the quine)
 ./run.sh uni-hello   # override nixpkgs hello with a pure function
 ./run.sh deep-hello  # override stdenv, rewrite the closure

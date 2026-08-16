@@ -1,0 +1,71 @@
+-- ----------------------------------------------------------------
+-- ----------------------------------------------------------------
+-- Unison as the builder language. The build script that runs
+-- inside the sandbox is Unison too: compiled to .uc bytecode on
+-- the host, added to the store, executed by nixpkgs' ucm with
+-- `run.compiled`. The bash-like dialect is the Sh ability; its
+-- handler runs in the sandbox with inherited stdio, so `run`
+-- output lands in the build log.
+--
+-- Dependency paths and $out travel as plain env vars (PATH,
+-- dep_<name>, out), because child processes need PATH in the real
+-- environment anyway. The daemon rewrites the placeholders in env
+-- like everywhere else.
+
+-- Transitive non-builtin code of a set of links. Builtins exist on
+-- both sides and their code cannot serialize, so they are skipped.
+upkg.codeOf :
+  [Link.Term] -> [(Link.Term, Code)] -> {IO, Exception} [(Link.Term, Code)]
+upkg.codeOf pending acc = match pending with
+  [] -> acc
+  link +: rest ->
+    if List.any (cases (l, _) -> l === link) acc then upkg.codeOf rest acc
+    else if Text.startsWith "##" (Link.Term.toText link) then
+      upkg.codeOf rest acc
+    else match Code.lookup link with
+      None -> upkg.codeOf rest acc
+      Some code ->
+        upkg.codeOf (rest ++ Code.dependencies code) (acc :+ (link, code))
+
+-- Pack a value and the code it needs into one Bytes. The outer
+-- envelope is plain data, so it loads anywhere.
+upkg.ship : a -> {IO, Exception} Bytes
+upkg.ship v =
+  val = Value.value v
+  bytes = Value.serialize_v4 val
+  pairs =
+    List.map
+      (cases
+        (l, c) -> (Value.serialize_v4 (Value.value l), Code.serialize_v3 c))
+      (upkg.codeOf (Value.dependencies val) [])
+  Value.serialize_v4 (Value.value (bytes, pairs))
+
+upkg.unship : Bytes -> {IO, Exception} a
+upkg.unship b =
+  bad = msg -> Exception.raise (Generic.failure msg ())
+  (vb, pairs) = match Value.load (Value.deserialize b) with
+    Left _ -> bad "unship: cannot load the envelope"
+    Right e -> (e : (Bytes, [(Bytes, Bytes)]))
+  toPair = cases
+    (lb, cb) ->
+      link = match Value.load (Value.deserialize lb) with
+        Left _ -> bad "unship: cannot load a code link"
+        Right l -> (l : Link.Term)
+      (link, Code.deserialize cb)
+  _ = Code.cache_ (List.map toPair pairs)
+  match Value.load (Value.deserialize vb) with
+    Left missing ->
+      bad
+        ("unship: still missing "
+          ++ Text.join ", " (List.map Link.Term.toText missing))
+    Right v -> v
+
+-- The generic sandbox entrypoint: argv is the shipped script file.
+upkg.Sh.runner : '{IO, Exception} ()
+upkg.Sh.runner = do
+  match !IO.getArgs with
+    file +: _ ->
+      script = upkg.unship (readFile (FilePath file))
+      upkg.Sh.build (script : '{IO, Exception, upkg.Sh} ())
+    _ ->
+      Exception.raise (Generic.failure "usage: runner <script.uv>" ())

@@ -26,20 +26,25 @@ fi
 # files; ./run.sh index regenerates the index file, which makes the
 # stamp stale and triggers a recompile on the next run.
 cache=.ucm-compiled
-cur=$(cat src/upkg.u src/pkgs.u src/nixpkgs-index.u | sha256sum | cut -d' ' -f1)
+# Load order: a file may only reference what earlier files (or the
+# generated index) already put in the codebase.
+sources="src/upkg/00-core.u src/upkg/01-model.u src/upkg/02-index.u src/upkg/03-ship.u src/upkg/04-plan.u src/upkg/05-drv.u src/upkg/06-cargo.u src/pkgs.u src/site.u"
+cur=$(cat $sources src/nixpkgs-index.u | sha256sum | cut -d' ' -f1)
 if [ ! -f "$cache/upkg.uc" ] || [ "$(cat "$cache/stamp" 2>/dev/null)" != "$cur" ]; then
   echo "Compiling frontend ..." >&2
   mkdir -p "$cache"
-  out=$(printf 'load src/upkg.u\nupdate\nload src/pkgs.u\nupdate\ncompile pkgs.main %s\ncompile pkgs.test.main %s\ncompile upkg.Sh.runner %s\n' \
+  cmds=""
+  for f in $sources; do cmds="$cmds load $f\nupdate\n"; done
+  out=$(printf "${cmds}compile site.main %s\ncompile site.test.main %s\ncompile upkg.Sh.runner %s\n" \
     "$cache/upkg" "$cache/test" "$cache/runner" | ucm -c .ucm 2>&1) || true
   # ucm exits 0 even when the load fails; without this check, compile
   # would silently emit bytecode for the stale codebase version.
   if echo "$out" | grep -qE 'reserved keyword|I got confused|I was surprised|Typechecking failed|could not|blocked'; then
     echo "$out" >&2
-    echo "compile failed: src/upkg.u or src/pkgs.u has errors" >&2
+    echo "compile failed: a source file has errors" >&2
     exit 1
   fi
-  if [ ! -f "$cache/upkg.uc" ] || [ "$cache/upkg.uc" -ot src/upkg.u ]; then
+  if [ ! -f "$cache/upkg.uc" ]; then
     echo "$out" >&2
     echo "compile failed" >&2
     exit 1

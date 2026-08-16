@@ -1,0 +1,225 @@
+-- site: a consumer of the pkgs collection -- the layer where
+-- nixpkgs users write their configuration. Deployment instances,
+-- user environments, the CLI, and the quine live here; packages
+-- live in src/pkgs.u; the build system lives in src/upkg.u.
+
+-- The instance: serve the banner built by our own frontend, with
+-- basic auth whose password arrives at run time via $NGINX_PASSWORD.
+site.web : upkg.UPkg
+site.web =
+  pkgs.mkNginx
+    (pkgs.NginxConfig.NginxConfig
+      8080
+      2
+      true
+      pkgs.banner
+      (Some ("admin", pkgs.Secret.FromEnv "NGINX_PASSWORD")))
+
+
+-- A user environment: packages from the collection (Unison-built
+-- and nixpkgs alike) symlinked into one bin/.
+site.profile : upkg.UPkg
+site.profile =
+  script = do
+    use upkg.Sh run dep
+    out = upkg.Sh.out
+    run "mkdir" ["-p", out ++ "/bin"]
+    link = d -> run "/bin/sh" ["-c", "ln -s " ++ d ++ "/bin/* " ++ out ++ "/bin/"]
+    link (dep "uhello-2.12.1")
+    link (dep "gnugrep")
+  upkg.UPkg.UPkg
+    "profile"
+    script
+    [ upkg.Dep.LocalU pkgs.uhello
+    , upkg.Dep.Nixpkgs "gnugrep"
+    , upkg.Dep.Nixpkgs "coreutils"
+    ]
+
+site.registry : [(Text, upkg.UPkg)]
+site.registry = [("nginx", site.web), ("profile", site.profile)]
+
+-- ----------------------------------------------------------------
+-- The quine: upkg packaged by upkg. The build script is a shipped
+-- closure that references site.dispatch, so the whole frontend --
+-- pinned index included -- rides along in the envelope. The same
+-- closure has two modes: run by the sandbox with no extra args it
+-- installs a copy of its own envelope (found via
+-- /proc/self/cmdline) and a wrapper; run from the store with args,
+-- it IS the package manager.
+
+site.self.script : '{IO, Exception, upkg.Sh} ()
+site.self.script = do
+  match List.drop 1 !IO.getArgs with
+    [] ->
+      use upkg.Sh run
+      out = upkg.Sh.out
+      nul = Optional.getOrElse ?a (Char.fromNat 0)
+      -- /proc/self in a child is the child; $PPID gets the runner
+      run "/bin/sh" ["-c", "cp /proc/$PPID/cmdline self-cmdline"]
+      argv =
+        List.filter
+          (t -> Nat.gt (Text.size t) 0)
+          (Text.split nul (readFileUtf8 (FilePath "self-cmdline")))
+      ucmPath = upkg.Sh.dep "unison-ucm" ++ "/bin/ucm"
+      match List.reverse argv with
+        uvPath +: (runnerPath +: _) ->
+          run "mkdir" ["-p", out ++ "/bin", out ++ "/lib"]
+          run "cp" [uvPath, out ++ "/lib/upkg.uv"]
+          writeFileUtf8
+            (FilePath (out ++ "/bin/upkg"))
+            (Text.join
+              "\n"
+              [ "#!/bin/sh"
+              , "UPKG_RUNNER=" ++ runnerPath ++ " exec " ++ ucmPath
+                  ++ " run.compiled " ++ runnerPath
+                  ++ " " ++ out ++ "/lib/upkg.uv \"$@\""
+              , ""
+              ])
+          run "chmod" ["+x", out ++ "/bin/upkg"]
+        _ ->
+          Exception.raise
+            (Generic.failure
+              ("self: unexpected /proc/self/cmdline: "
+                ++ Text.join " | " argv)
+              ())
+    args -> site.dispatch args
+
+site.self : upkg.UPkg
+site.self =
+  upkg.UPkg.UPkg
+    "upkg"
+    site.self.script
+    [upkg.Dep.Nixpkgs "coreutils", upkg.Dep.Nixpkgs "unison-ucm"]
+
+-- ----------------------------------------------------------------
+-- Entry points.
+
+site.test.main : '{IO, Exception} ()
+site.test.main = do
+  expectOut = "/1rz4g4znpzjwh1xymhjpm42vipw92pr73vdgl6xs1hycac8kf2n9"
+  gotOut = upkg.placeholder "out"
+  expectUp = "/06vf5fh13wskpg2pr3wdh7r95xhyx1j9sp8y3qga3b1qlpbjpq49"
+  gotUp =
+    upkg.upstreamPlaceholder
+      "/nix/store/b9mn5w3x4p2mi9y5344pfykak46f71ys-dep-a.drv" "out"
+  check = label -> expect -> got -> let
+    if expect == (got : Text)
+      then printLine (label ++ ": ok")
+      else printLine (label ++ ": FAIL got " ++ got)
+  check "own-output placeholder" expectOut gotOut
+  check "upstream placeholder" expectUp gotUp
+
+site.dispatch : [Text] -> {IO, Exception} ()
+site.dispatch args =
+  match args with
+    ["index"] ->
+      printLine
+        ("evaluating " ++ Nat.toText (List.size upkg.index.attrs)
+          ++ " attrs in one nix eval ...")
+      !upkg.index.generate
+      printLine "wrote src/nixpkgs-index.u"
+    ["deep-hello"] ->
+      rootDrv = upkg.Pinned.drv (upkg.resolveNixpkgs "hello")
+      printLine ("importing closure of " ++ rootDrv ++ " ...")
+      closure = upkg.importClosure rootDrv
+      printLine ("  " ++ Nat.toText (Map.size closure) ++ " derivations")
+      targets =
+        List.foldLeft
+          (acc -> cases (b, d) ->
+            n = upkg.Drv.name d
+            if (n Text.== "stdenv-linux")
+              || (n Text.== "stdenv-linux-no-cc")
+            then Set.insert b acc
+            else acc)
+          Set.empty
+          (Map.toList closure)
+      printLine
+        ("  targets: " ++ Nat.toText (Set.size targets) ++ " stdenv drvs")
+      marker = "echo '>>> hello from the unison graph rewrite <<<'"
+      f = d -> let
+        old =
+          Optional.getOrElse "" (upkg.lookup "preHook" (upkg.Drv.env d))
+        upkg.Drv.setEnv "preHook" (old ++ "\n" ++ marker) d
+      marks = upkg.closure.markAll closure targets
+      nAff = List.size (List.filter at2 (Map.toList marks))
+      printLine ("  affected: " ++ Nat.toText nAff ++ " drvs to rewrite")
+      (_, newRoot) =
+        upkg.closure.rewrite closure marks targets f Map.empty
+          (Text.drop 11 rootDrv)
+      printLine ("building " ++ newRoot ++ " ...")
+      out =
+        upkg.nix
+          ["build", "--no-link", "--print-out-paths", newRoot ++ "^out"]
+          ""
+      printLine ("out: " ++ upkg.chomp out)
+    ["upkg"] ->
+      printLine "realising upkg (the quine) ..."
+      drv = upkg.realiseU site.self
+      printLine ("building " ++ drv ++ " ...")
+      out =
+        upkg.nix
+          ["build", "--no-link", "--print-out-paths", drv ++ "^out"]
+          ""
+      printLine ("out: " ++ upkg.chomp out)
+    ["hexyl"] ->
+      lock = readFileUtf8 (FilePath "fixtures/hexyl-0.16.0.Cargo.lock")
+      up =
+        upkg.cargo.pkg
+          "hexyl"
+          "0.16.0"
+          "sha256-Q9Vt0EhytsbUKfGNLgPflfhT/rYYx82L8i0OaFHOXvg="
+          lock
+      printLine "realising hexyl (cargo, unison builder) ..."
+      drv = upkg.realiseU up
+      printLine ("building " ++ drv ++ " ...")
+      out =
+        upkg.nix
+          ["build", "--no-link", "--print-out-paths", drv ++ "^out"]
+          ""
+      printLine ("out: " ++ upkg.chomp out)
+    ["uni-hello"] ->
+      printLine "importing nixpkgs#hello ..."
+      d = upkg.importDrv "hello"
+      d2 = upkg.Drv.caify (pkgs.uniHello.override d)
+      drv = upkg.Drv.realise d2
+      printLine ("  drv hello-uni -> " ++ drv)
+      printLine ("building " ++ drv ++ " ...")
+      out =
+        upkg.nix
+          ["build", "--no-link", "--print-out-paths", drv ++ "^out"]
+          ""
+      printLine ("out: " ++ upkg.chomp out)
+    [pkgName] ->
+      match upkg.lookup pkgName pkgs.registry with
+        Some pkg ->
+          printLine ("realising " ++ pkgName ++ " ...")
+          drv = upkg.realise pkg
+          printLine ("building " ++ drv ++ " ...")
+          out =
+            upkg.nix
+              ["build", "--no-link", "--print-out-paths", drv ++ "^out"]
+              ""
+          printLine ("out: " ++ upkg.chomp out)
+        None -> match upkg.lookup pkgName (pkgs.uregistry ++ site.registry) with
+          Some up ->
+            printLine ("realising " ++ pkgName ++ " (unison builder) ...")
+            drv = upkg.realiseU up
+            printLine ("building " ++ drv ++ " ...")
+            out =
+              upkg.nix
+                ["build", "--no-link", "--print-out-paths", drv ++ "^out"]
+                ""
+            printLine ("out: " ++ upkg.chomp out)
+          None ->
+            printLine
+              ("unknown package: " ++ pkgName ++ " (known: "
+                ++ Text.join
+                    ", "
+                    (List.map at1 pkgs.registry
+                      ++ List.map at1 pkgs.uregistry
+                      ++ List.map at1 site.registry)
+                ++ ")")
+    _ -> printLine "usage: upkg <package>"
+
+site.main : '{IO, Exception} ()
+site.main = do site.dispatch !IO.getArgs
