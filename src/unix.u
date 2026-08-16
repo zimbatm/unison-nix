@@ -263,7 +263,7 @@ unix.index.attrs : [Text]
 unix.index.attrs =
   [ "bash", "cacert", "coreutils", "curl", "gawk", "gcc", "gettext"
   , "gnugrep", "gnumake", "gnused", "gnutar", "gzip", "hello"
-  , "unison-ucm"
+  , "nginx", "unison-ucm"
   ]
 
 unix.index.generate : '{IO, Exception} ()
@@ -1027,8 +1027,138 @@ pkgs.uhello =
       ]
   unix.UPkg.UPkg "uhello-2.12.1" script (src +: toolchain)
 
+-- ----------------------------------------------------------------
+-- Configuration across stages: one typed record steers the dep
+-- graph at eval time, renders nginx.conf at build time (the
+-- renderer ships with the closure), and prints from the run-time
+-- wrapper. What nixpkgs does with module options -> conf strings
+-- -> wrappers is one value here.
+
+-- A run-time secret is a reference, never a value: it names where
+-- the wrapper finds the secret at startup. It cannot end up in the
+-- store because the frontend never sees it. The stage each field
+-- binds at is visible in its type: Nat and Boolean bake at build
+-- time, Secret defers to run time.
+type unix.Secret = FromEnv Text | FromFile Text
+
+type unix.NginxConfig =
+  { port : Nat
+  , workers : Nat
+  , gzip : Boolean
+  , content : unix.Pkg
+  , auth : Optional (Text, unix.Secret)
+  }
+
+-- Pure conf renderer. Runs inside the sandbox as shipped code.
+unix.nginx.conf : Nat -> Nat -> Boolean -> Boolean -> Text -> Text
+unix.nginx.conf port workers gzip authOn root =
+  Text.join
+    "\n"
+    [ "daemon off;"
+    , "worker_processes " ++ Nat.toText workers ++ ";"
+    , "error_log stderr;"
+    , "pid /tmp/nginx-unison.pid;"
+    , "events { worker_connections 128; }"
+    , "http {"
+    , "  access_log off;"
+    , "  default_type text/html;"
+    , "  client_body_temp_path /tmp/nginx-unison-body;"
+    , "  proxy_temp_path /tmp/nginx-unison-proxy;"
+    , "  fastcgi_temp_path /tmp/nginx-unison-fcgi;"
+    , "  uwsgi_temp_path /tmp/nginx-unison-uwsgi;"
+    , "  scgi_temp_path /tmp/nginx-unison-scgi;"
+    , "  " ++ (if gzip then "gzip on;" else "gzip off;")
+    , "  server {"
+    , "    listen 127.0.0.1:" ++ Nat.toText port ++ ";"
+    , "    root " ++ root ++ ";"
+    , "    index index.html;"
+    , if authOn then
+        Text.join
+          "\n"
+          [ "    auth_basic \"unison\";"
+          , "    auth_basic_user_file /tmp/nginx-unison-htpasswd;"
+          ]
+      else "    # no auth"
+    , "  }"
+    , "}"
+    , ""
+    ]
+
+unix.mkNginx : unix.NginxConfig -> unix.UPkg
+unix.mkNginx cfg =
+  -- Destructure before the lambda: the closure captures these
+  -- scalars, not the whole record (which drags the content Pkg).
+  port = unix.NginxConfig.port cfg
+  workers = unix.NginxConfig.workers cfg
+  gzip = unix.NginxConfig.gzip cfg
+  contentName = unix.Pkg.name (unix.NginxConfig.content cfg)
+  -- The wrapper preamble that resolves the secret at run time.
+  -- Only shell text is captured; the secret itself never exists
+  -- at eval or build time.
+  authPre = match unix.NginxConfig.auth cfg with
+    None -> []
+    Some (user, unix.Secret.FromEnv var) ->
+      [ ": \"${" ++ var ++ ":?set " ++ var
+          ++ " to the basic auth password}\""
+      , "umask 077"
+      , "printf '%s:{PLAIN}%s\\n' '" ++ user ++ "' \"$" ++ var
+          ++ "\" > /tmp/nginx-unison-htpasswd"
+      ]
+    Some (user, unix.Secret.FromFile path) ->
+      [ "umask 077"
+      , "printf '%s:{PLAIN}%s\\n' '" ++ user ++ "' \"$(cat " ++ path
+          ++ ")\" > /tmp/nginx-unison-htpasswd"
+      ]
+  authOn = Boolean.not (List.isEmpty authPre)
+  script = do
+    use unix.Sh run dep
+    out = unix.Sh.out
+    html = out ++ "/html"
+    run "mkdir" ["-p", html, out ++ "/bin"]
+    run "cp" [dep contentName, html ++ "/index.html"]
+    writeFileUtf8
+      (FilePath (out ++ "/nginx.conf"))
+      (unix.nginx.conf port workers gzip authOn html)
+    writeFileUtf8
+      (FilePath (out ++ "/bin/serve"))
+      (Text.join
+        "\n"
+        ([ "#!/bin/sh"
+         , "echo 'serving " ++ contentName ++ " on http://127.0.0.1:"
+             ++ Nat.toText port ++ "' >&2"
+         ]
+          ++ authPre
+          ++ [ "exec " ++ dep "nginx" ++ "/bin/nginx -e stderr -c " ++ out
+                 ++ "/nginx.conf"
+             , ""
+             ]))
+    run "chmod" ["+x", out ++ "/bin/serve"]
+  unix.UPkg.UPkg
+    ("nginx-" ++ contentName)
+    script
+    [ unix.Dep.Nixpkgs "nginx"
+    , unix.Dep.Nixpkgs "coreutils"
+    , unix.Dep.Local (unix.NginxConfig.content cfg)
+    ]
+
+-- The instance: serve the banner built by our own frontend, with
+-- basic auth whose password arrives at run time via $NGINX_PASSWORD.
+pkgs.unginx : unix.UPkg
+pkgs.unginx =
+  unix.mkNginx
+    (unix.NginxConfig.NginxConfig
+      8080
+      2
+      true
+      pkgs.banner
+      (Some ("admin", unix.Secret.FromEnv "NGINX_PASSWORD")))
+
 pkgs.uregistry : [(Text, unix.UPkg)]
-pkgs.uregistry = [("ugreeting", pkgs.ugreeting), ("uhello", pkgs.uhello)]
+pkgs.uregistry =
+  [ ("ugreeting", pkgs.ugreeting)
+  , ("uhello", pkgs.uhello)
+  , ("nginx", pkgs.unginx)
+  ]
 
 -- ----------------------------------------------------------------
 -- Entry points.

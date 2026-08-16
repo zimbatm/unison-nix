@@ -254,6 +254,50 @@ cache directories, no network. And `Code.lookup` works inside a
 `run.compiled` binary, so the compiled frontend can harvest the
 code it needs to ship without consulting the codebase.
 
+## Configuration across stages: one value, three bind times
+
+`./run.sh nginx` builds an nginx server from one typed record:
+
+```unison
+type unix.NginxConfig =
+  { port : Nat                        -- binds at build time
+  , workers : Nat
+  , gzip : Boolean
+  , content : unix.Pkg                -- binds at eval time
+  , auth : Optional (Text, unix.Secret)  -- binds at run time
+  }
+
+pkgs.unginx =
+  unix.mkNginx
+    (NginxConfig 8080 2 true pkgs.banner
+      (Some ("admin", Secret.FromEnv "NGINX_PASSWORD")))
+```
+
+- `content` shapes the derivation graph at eval time: the package
+  to serve becomes a `Local` dep, built by this frontend.
+- `port`/`workers`/`gzip` render `nginx.conf` at build time. The
+  renderer (`unix.nginx.conf`) is a pure function that ships with
+  the closure and runs inside the sandbox.
+- `auth` binds at run time. A `Secret` is a *reference* (env var
+  or file), never a value: the generated `bin/serve` wrapper
+  resolves it at startup, writes a mode-600 htpasswd under /tmp,
+  and execs nginx. The secret cannot enter the store because the
+  frontend never sees it.
+
+```
+$ ./bin/serve
+serve: line 3: NGINX_PASSWORD: set NGINX_PASSWORD to the ...
+$ NGINX_PASSWORD=hunter2 ./bin/serve &
+$ curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/
+401
+$ curl -s -u admin:hunter2 http://127.0.0.1:8080/
+hello from the unison frontend
+```
+
+What nixpkgs spreads over module options, conf-string
+interpolation, and wrapper scripts is one record here, and the
+stage each field binds at is visible in its type.
+
 ## How it works
 
 ```
@@ -323,6 +367,7 @@ nix develop          # or: nix shell nixpkgs#unison-ucm
 ./run.sh deep-hello  # override stdenv, rewrite the closure
 ./run.sh ugreeting   # build with a Unison build script
 ./run.sh uhello      # compile GNU hello with a Unison build script
+./run.sh nginx       # config-driven nginx with a run-time secret
 ./run.sh index       # regenerate the pinned nixpkgs index
 ```
 
