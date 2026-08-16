@@ -312,6 +312,203 @@ unix.realise.go cache pkg = match pkg with
         (cache2 :+ (name, drvPath), drvPath)
 
 -- ----------------------------------------------------------------
+-- Typed derivations. `nix derivation show` emits the same schema
+-- version 4 JSON that `nix derivation add` accepts, so a nixpkgs
+-- derivation round-trips through a plain Unison value. An override
+-- is then a pure Drv -> Drv function. No overrideAttrs, no
+-- fixpoints, no mkDerivation magic.
+
+-- An output is input-addressed (basename of the store path, fixed
+-- at eval time), floating CA (daemon computes the path), or fixed
+-- (SRI hash + method).
+type unix.Out = Addressed Text | Floating | Fixed Text Text
+
+type unix.Drv =
+  { name : Text
+  , system : Text
+  , builder : Text
+  , args : [Text]
+  , env : [(Text, Text)]
+  , inputDrvs : [(Text, [Text])]
+  , inputSrcs : [Text]
+  , outputs : [(Text, unix.Out)]
+  , attrs : Optional Json
+  }
+
+-- Small Json access kit. The lib exposes the constructors, so this
+-- is all we need instead of a decoder framework.
+
+unix.json.get : Text -> Json -> {Exception} Json
+unix.json.get k j = match j with
+  Json.Object kvs -> match unix.assoc.lookup k kvs with
+    Some v -> v
+    None -> Exception.raise (Generic.failure ("json: missing key " ++ k) ())
+  _ -> Exception.raise (Generic.failure ("json: not an object at " ++ k) ())
+
+unix.json.opt : Text -> Json -> Optional Json
+unix.json.opt k j = match j with
+  Json.Object kvs -> unix.assoc.lookup k kvs
+  _ -> None
+
+unix.json.asText : Json -> {Exception} Text
+unix.json.asText j = match j with
+  Json.Text t -> t
+  _ -> Exception.raise (Generic.failure "json: not a string" ())
+
+unix.json.asArray : Json -> {Exception} [Json]
+unix.json.asArray j = match j with
+  Json.Array xs -> xs
+  _ -> Exception.raise (Generic.failure "json: not an array" ())
+
+unix.json.asObject : Json -> {Exception} [(Text, Json)]
+unix.json.asObject j = match j with
+  Json.Object kvs -> kvs
+  _ -> Exception.raise (Generic.failure "json: not an object" ())
+
+-- Rewrite every string leaf. Keys stay as they are.
+unix.json.mapText : (Text -> Text) -> Json -> Json
+unix.json.mapText f j = match j with
+  Json.Text t -> Json.Text (f t)
+  Json.Array xs -> Json.Array (List.map (unix.json.mapText f) xs)
+  Json.Object kvs ->
+    Json.Object
+      (List.map (p -> match p with (k, v) -> (k, unix.json.mapText f v)) kvs)
+  _ -> j
+
+-- Upsert a key in a Json object. Non-objects pass through.
+unix.json.set : Text -> Json -> Json -> Json
+unix.json.set k v j = match j with
+  Json.Object kvs ->
+    if List.any (p -> at1 p Text.== k) kvs
+    then
+      Json.Object
+        (List.map
+          (p -> match p with
+            (k2, v2) -> if k2 Text.== k then (k2, v) else (k2, v2))
+          kvs)
+    else Json.Object (kvs :+ (k, v))
+  _ -> j
+
+unix.Drv.fromJson : Json -> {Exception} unix.Drv
+unix.Drv.fromJson j =
+  texts = xs -> List.map unix.json.asText (unix.json.asArray xs)
+  pairText = p -> match p with (k, v) -> (k, unix.json.asText v)
+  out = o -> match unix.json.opt "path" o with
+    Some p -> unix.Out.Addressed (unix.json.asText p)
+    None -> match unix.json.opt "hash" o with
+      Some h ->
+        unix.Out.Fixed
+          (unix.json.asText h)
+          (unix.json.asText (unix.json.get "method" o))
+      None -> unix.Out.Floating
+  inputs = unix.json.get "inputs" j
+  drvIn = p -> match p with
+    (k, v) -> (k, texts (unix.json.get "outputs" v))
+  unix.Drv.Drv
+    (unix.json.asText (unix.json.get "name" j))
+    (unix.json.asText (unix.json.get "system" j))
+    (unix.json.asText (unix.json.get "builder" j))
+    (texts (unix.json.get "args" j))
+    (List.map pairText (unix.json.asObject (unix.json.get "env" j)))
+    (List.map drvIn (unix.json.asObject (unix.json.get "drvs" inputs)))
+    (texts (unix.json.get "srcs" inputs))
+    (List.map
+      (p -> match p with (k, v) -> (k, out v))
+      (unix.json.asObject (unix.json.get "outputs" j)))
+    (unix.json.opt "structuredAttrs" j)
+
+unix.Drv.toJson : unix.Drv -> Json
+unix.Drv.toJson d = match d with
+  unix.Drv.Drv name system builder args env inDrvs inSrcs outputs attrs ->
+    outJson = o -> match o with
+      unix.Out.Addressed p -> Json.object [("path", Json.text p)]
+      unix.Out.Floating ->
+        Json.object
+          [("hashAlgo", Json.text "sha256"), ("method", Json.text "nar")]
+      unix.Out.Fixed h m ->
+        Json.object [("hash", Json.text h), ("method", Json.text m)]
+    inDrv = p -> match p with
+      (k, outs) ->
+        ( k
+        , Json.object
+            [ ("dynamicOutputs", Json.object [])
+            , ("outputs", Json.array (List.map Json.text outs))
+            ]
+        )
+    kv = p -> match p with (k, v) -> (k, Json.text v)
+    base =
+      [ ("args", Json.array (List.map Json.text args))
+      , ("builder", Json.text builder)
+      , ("env", Json.object (List.map kv env))
+      , ( "inputs"
+        , Json.object
+            [ ("drvs", Json.object (List.map inDrv inDrvs))
+            , ("srcs", Json.array (List.map Json.text inSrcs))
+            ]
+        )
+      , ("name", Json.text name)
+      , ( "outputs"
+        , Json.object
+            (List.map (p -> match p with (k, v) -> (k, outJson v)) outputs)
+        )
+      ]
+    withAttrs = match attrs with
+      Some a -> base :+ ("structuredAttrs", a)
+      None -> base
+    Json.object
+      (withAttrs ++ [("system", Json.text system), ("version", Json.nat 4)])
+
+-- Turn an input-addressed derivation into a floating CA one. The
+-- old output paths become placeholders everywhere, and the daemon
+-- computes fresh paths at build time. This is what makes a mutated
+-- nixpkgs derivation buildable: its identity changed, so its old
+-- output paths are lies, and CA sidesteps recomputing them.
+unix.Drv.caify : unix.Drv -> unix.Drv
+unix.Drv.caify d =
+  subs =
+    List.foldLeft
+      (acc -> p -> match p with
+        (oname, unix.Out.Addressed path) ->
+          acc :+ ("/nix/store/" ++ path, unix.placeholder oname)
+        _ -> acc)
+      []
+      (unix.Drv.outputs d)
+  swap = t -> let
+    List.foldLeft
+      (s -> pr -> match pr with (old, new) -> Text.replaceAll old new s)
+      t
+      subs
+  d
+    |> unix.Drv.env.modify
+         (List.map (p -> match p with (k, v) -> (k, swap v)))
+    |> unix.Drv.args.modify (List.map swap)
+    |> unix.Drv.attrs.modify (Optional.map (unix.json.mapText swap))
+    |> unix.Drv.outputs.modify
+         (List.map (p -> match p with (k, _) -> (k, unix.Out.Floating)))
+
+unix.Drv.setAttr : Text -> Json -> unix.Drv -> unix.Drv
+unix.Drv.setAttr k v d =
+  unix.Drv.attrs.modify (Optional.map (unix.json.set k v)) d
+
+unix.Drv.rename : Text -> unix.Drv -> unix.Drv
+unix.Drv.rename n d =
+  d |> unix.Drv.name.set n |> unix.Drv.setAttr "name" (Json.text n)
+
+-- Import one nixpkgs derivation as a typed value.
+unix.importDrv : Text -> {IO, Exception} unix.Drv
+unix.importDrv attr =
+  raw = unix.nix ["derivation", "show", "nixpkgs#" ++ attr] ""
+  j = Json.fromText raw
+  match unix.json.asObject (unix.json.get "derivations" j) with
+    [(_, dj)] -> unix.Drv.fromJson dj
+    _ ->
+      Exception.raise
+        (Generic.failure ("expected one derivation: " ++ attr) ())
+
+unix.Drv.realise : unix.Drv -> {IO, Exception} Text
+unix.Drv.realise d = unix.addDrv (Json.toText (unix.Drv.toJson d))
+
+-- ----------------------------------------------------------------
 -- A tiny package set.
 
 pkgs.greeting : unix.Pkg
@@ -370,6 +567,20 @@ pkgs.gnuhello =
       "sha256-jZkUKv2SV28wsM18tCqNxoCZmLxdYH2Idh9RLibH2yA="
   unix.Pkg.Pkg "hello-2.12.1" script (src +: toolchain)
 
+-- The payoff of typed derivations: a nixpkgs override is a pure
+-- function on a value. Rename, add a configure flag, drop the test
+-- suite. The daemon rebuilds hello from source under the new
+-- identity.
+pkgs.uniHello.override : unix.Drv -> unix.Drv
+pkgs.uniHello.override d =
+  d
+    |> unix.Drv.rename "hello-uni"
+    |> unix.Drv.setAttr
+         "configureFlags"
+         (Json.array [Json.text "--program-prefix=uni-"])
+    |> unix.Drv.setAttr "doCheck" (Json.Boolean false)
+    |> unix.Drv.setAttr "doInstallCheck" (Json.Boolean false)
+
 pkgs.registry : [(Text, unix.Pkg)]
 pkgs.registry =
   [ ("greeting", pkgs.greeting)
@@ -399,6 +610,18 @@ unix.test.main = do
 unix.main : '{IO, Exception} ()
 unix.main = do
   match !IO.getArgs with
+    ["uni-hello"] ->
+      printLine "importing nixpkgs#hello ..."
+      d = unix.importDrv "hello"
+      d2 = unix.Drv.caify (pkgs.uniHello.override d)
+      drv = unix.Drv.realise d2
+      printLine ("  drv hello-uni -> " ++ drv)
+      printLine ("building " ++ drv ++ " ...")
+      out =
+        unix.nix
+          ["build", "--no-link", "--print-out-paths", drv ++ "^out"]
+          ""
+      printLine ("out: " ++ unix.chomp out)
     [pkgName] ->
       match unix.assoc.lookup pkgName pkgs.registry with
         Some pkg ->

@@ -63,11 +63,9 @@ needed for this direction. A floating CA derivation may depend on
 input-addressed derivations; the daemon accepts the mixed graph.
 
 The Nix language still runs here, but demoted to an import oracle —
-the role Scheme gives `guix import`. Next refinements on the same
-seam: eval a pinned index once per nixpkgs revision and store it as
-a Unison value (eval-free at use time), or import whole drv closures
-as typed Unison values so overrides become pure `Drv -> Drv`
-functions.
+the role Scheme gives `guix import`. A remaining refinement on the
+same seam: eval a pinned index once per nixpkgs revision and store
+it as a Unison value, so use time is eval-free.
 
 ## Building from source: it works too
 
@@ -101,6 +99,50 @@ Two facts make it cheap:
 - Fixed output paths are universal. Any binary cache that has the
   tarball (e.g. via nixpkgs' own fetch of the same file) can
   substitute it.
+
+## Overrides as pure functions: also works
+
+```
+$ ./run.sh uni-hello
+importing nixpkgs#hello ...
+  drv hello-uni -> /nix/store/nsqbqy9k...-hello-uni.drv
+building ...
+out: /nix/store/a96hlhdi...-hello-uni
+
+$ /nix/store/a96hlhdi...-hello-uni/bin/uni-hello
+Hello, world!
+```
+
+This imports the nixpkgs `hello` derivation as a typed Unison value
+(`unix.Drv`) and overrides it with a pure function:
+
+```unison
+pkgs.uniHello.override : unix.Drv -> unix.Drv
+pkgs.uniHello.override d =
+  d |> unix.Drv.rename "hello-uni"
+    |> unix.Drv.setAttr "configureFlags"
+         (Json.array [Json.text "--program-prefix=uni-"])
+    |> unix.Drv.setAttr "doCheck" (Json.Boolean false)
+```
+
+No `overrideAttrs`, no fixpoints, no `mkDerivation` internals. The
+daemon rebuilds hello from source under the new identity.
+
+Three facts make this work:
+
+- `nix derivation show` emits the same schema version 4 JSON that
+  `nix derivation add` accepts. Import is parse; export is print.
+- `unix.Drv.caify` converts the input-addressed derivation to
+  floating CA: the old output paths become placeholders, and the
+  daemon computes fresh paths. The frontend never recomputes
+  output-path hashes for the changed derivation.
+- Derivation JSON key order does not matter. The Unison-emitted drv
+  differs textually from a `jq`-produced one, but both resolve to
+  the same content-addressed build, which the daemon reuses.
+
+The imported derivation keeps its own builder and stdenv machinery;
+only the fields we touch change. nixpkgs' structured attrs (real
+lists like `configureFlags`) make the overrides surgical.
 
 ## How it works
 
@@ -161,6 +203,8 @@ nix develop          # or: nix shell nixpkgs#unison-ucm
 ./run.sh greeting    # build a leaf package
 ./run.sh banner      # build a package with a dependency
 ./run.sh shout       # build a package with nixpkgs dependencies
+./run.sh hello       # compile GNU hello from the upstream tarball
+./run.sh uni-hello   # override nixpkgs hello with a pure function
 ```
 
 Requires Nix 2.35+ with a daemon. The `ca-derivations` and
@@ -193,6 +237,10 @@ is needed.
   Same fix as above.
 - The build script DSL (`@dep@` substitution) is a placeholder for a
   real typed builder API.
+- `unix.importDrv` imports one derivation, not its closure.
+  Overriding a deep dependency (e.g. glibc) needs the closure and a
+  rewrite of every downstream derivation to placeholders. Same
+  mechanism, more plumbing.
 - `nix derivation add` and `nix build` are spawned as processes. A
   real frontend would speak the daemon protocol directly, as
   `guix-daemon` clients do.
@@ -219,3 +267,8 @@ is needed.
    structured attrs changed all drv hashes, but `shout` and
    `hello-2.12.1` rebuilt to byte-identical outputs and kept their
    store paths.
+8. `nix derivation show` and `nix derivation add` speak the same
+   JSON. A derivation is therefore a first-class value: parse,
+   transform with a pure function, print, build. CA-ification (old
+   output paths -> placeholders, outputs -> floating) makes the
+   mutated derivation buildable without any hash computation.
