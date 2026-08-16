@@ -1,0 +1,15 @@
+mini.main : '{IO, Exception} Nat
+mini.main = do
+  sock = match unixClientSocket.impl "/nix/var/nix/daemon-socket/socket" with
+    Right s -> s
+    Left f -> raise f
+  m1 = Bytes.encodeNat64le 0x6e697863
+  match socketSend.impl sock m1 with
+    Right _ -> ()
+    Left f -> raise f
+  reply = match socketReceive.impl sock 8 with
+    Right bs -> bs
+    Left f -> raise f
+  match Bytes.decodeNat64le reply with
+    Some (n, _) -> n
+    None -> 0

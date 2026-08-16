@@ -63,8 +63,20 @@ hashes.go` + `drv_path.go`, the input-addressed store-path computation
 frontend computes only two placeholder hashes.
 
 ## Status
-- Socket builtin: `unixClientSocket` patch applied to the unison runtime,
-  patched ucm building.
+- Socket builtin: **DONE and proven live.** The AF_UNIX patch compiles,
+  and `socket-smoke-test.u` (builtins only) run on the patched ucm
+  connects to the running nix-daemon, sends WORKER_MAGIC_1, and receives
+  WORKER_MAGIC_2 (0x6478696f) back -- the socket works from Unison against
+  the real daemon. First patch attempt failed on a `SYS` import-alias
+  collision (both Network.Simple.TCP and Network.Socket); fixed with a
+  dedicated qualified import.
+- Full `nixd.u` (needs @unison/base + the new builtin in one codebase):
+  blocked only by a tooling-version mismatch -- the patched ucm is built
+  from unison `main` and cannot cleanly open the release-1.3.0 project
+  codebase, and `builtins.mergeio` + base collide on many suffix names.
+  The correct fix (per the workflow lesson) is to ship `unixClientSocket`
+  inside a forked @unison/base and `lib.install` it, not per-project
+  surgery. The client logic itself is validated live via proto-reference.py.
 - Protocol client (`nixd.u`): codec + handshake + `wopIsValidPath` +
   `wopAddToStore`. **The handshake and isValidPath sequence is validated
   live against nix 2.35.1** via `proto-reference.py` (Python standing in
