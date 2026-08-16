@@ -3,6 +3,19 @@ compile unix.test.main .ucm-compiled/test
 compile unix.main .ucm-compiled/unix
 update
 load src/unix.u
+update
+load src/unix.u
+delete.term unix.fetch
+delete.term unix.resolveDeps
+delete.term unix.realise.go
+delete.term unix.Node.script.modify
+delete.term unix.Node.script.set
+delete.term unix.Node.script
+compile unix.Sh.runner .ucm-compiled/runner
+compile unix.test.main .ucm-compiled/test
+compile unix.main .ucm-compiled/unix
+update
+load src/unix.u
 delete.namespace benchset
 add
 load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/benchset5000.u
@@ -85,16 +98,3 @@ compile unix.Sh.runner .ucm-compiled/runner
 compile unix.test.main .ucm-compiled/test
 compile unix.main .ucm-compiled/unix
 update
-load src/unix.u
-compile probeser2.load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/p2load
-compile probeser2.save /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/p2save
-update
-load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/probeser2.u
-find Link.Term
-find Link.Term.toText
-compile probeser2.load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/p2load
-compile probeser2.save /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/p2save
-update
-load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/probeser2.u
-view reflection.Code.serialize_v3
-view reflection.Code.deserialize

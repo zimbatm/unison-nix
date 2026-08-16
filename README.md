@@ -348,8 +348,10 @@ unix.submit : unix.Plan -> {IO, Exception} Text
 ```
 
 `plan` computes the whole build graph — scripts, dependency edges,
-fixed-output hashes — against the pinned index, with no IO in its
-type. That is Nix's pure-eval guarantee, but per definition and
+fixed-output hashes, and Unison build closures carried as values —
+against the pinned index, with no IO in its type. Both package
+kinds go through it (`planU` for Unison-built packages); closure
+serialization and code harvesting are IO and live in `submit`. That is Nix's pure-eval guarantee, but per definition and
 proved by the type system rather than by prohibiting effects in the
 whole language. Since the daemon computes all store paths, planned
 nodes reference each other symbolically (`unix.Ref`); `submit`

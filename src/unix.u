@@ -310,47 +310,11 @@ unix.index.generate = do
       ]
   writeFileUtf8 (FilePath "src/nixpkgs-index.u") txt
 
--- Realise a source fetch as a fixed-output derivation. curl and
--- CA certs come from nixpkgs. The output path is fixed by the SRI
--- hash alone; we read it back from the daemon instead of
--- implementing store-path hashing.
-unix.fetch : Text -> Text -> Text -> {IO, Exception} (Text, Text)
-unix.fetch name url sri =
-  (bashDrv, bashOut, bashOutName) = unix.resolveNixpkgs "bash"
-  (curlDrv, curlOut, curlOutName) = unix.resolveNixpkgs "curl"
-  (certDrv, certOut, certOutName) = unix.resolveNixpkgs "cacert"
-  script =
-    "export SSL_CERT_FILE=" ++ certOut ++ "/etc/ssl/certs/ca-bundle.crt; "
-      ++ curlOut ++ "/bin/curl --fail --location --output \"$out\" " ++ url
-  drvPath =
-    unix.addDrv
-      (unix.drvJson'
-        name
-        (bashOut ++ "/bin/bash")
-        script
-        [ (bashDrv, bashOutName)
-        , (curlDrv, curlOutName)
-        , (certDrv, certOutName)
-        ]
-        ""
-        (unix.fixedOutputs sri))
-  outPath =
-    unix.chomp (unix.exec "nix-store" ["--query", "--outputs", drvPath] "")
-  (drvPath, outPath)
-
 unix.assoc.lookup : Text -> [(Text, a)] -> Optional a
 unix.assoc.lookup k xs = match xs with
   [] -> None
   (k2, v) +: rest ->
     if k == k2 then Some v else unix.assoc.lookup k rest
-
--- ----------------------------------------------------------------
--- Realisation: walk the graph depth-first, add each derivation to
--- the store once, substitute output references into scripts. Local
--- deps get a floating-CA upstream placeholder. Nixpkgs deps get
--- their literal (input-addressed) output path.
---
--- A resolved dep is (name, drvPath, outputName, substText).
 
 -- ----------------------------------------------------------------
 -- Pure planning / effectful submission. `plan` computes the whole
@@ -364,11 +328,17 @@ unix.assoc.lookup k xs = match xs with
 -- pinned index), or the drv path / output of a planned node.
 type unix.Ref = Path Text | Drv Text | Output Text
 
+-- A node's build action: a shell script with @token@ substitution,
+-- or a Unison closure. Carrying the closure in the plan is pure;
+-- serializing it and harvesting its code is IO and happens in
+-- submit.
+type unix.Action = Script Text | Closure ('{IO, Exception, unix.Sh} ())
+
 type unix.Node =
   { name : Text
   , builder : Text
-  , script : Text
-  , subs : [(Text, unix.Ref)]        -- @token@ -> reference
+  , action : unix.Action
+  , subs : [(Text, unix.Ref)]        -- @token@ / dep name -> reference
   , inputs : [(unix.Ref, Text)]      -- (drv ref, output name)
   , fixed : Optional Text            -- SRI hash => fixed-output
   }
@@ -407,7 +377,7 @@ unix.plan.fetchNode acc fname url sri = match acc with
         unix.Node.Node
           fname
           (bashOut ++ "/bin/bash")
-          script
+          (unix.Action.Script script)
           []
           [ (unix.Ref.Path bashDrv, bashOutName)
           , (unix.Ref.Path curlDrv, curlOutName)
@@ -416,6 +386,38 @@ unix.plan.fetchNode acc fname url sri = match acc with
           (Some sri)
       (nodes :+ node, seen :+ fname)
 
+-- Resolve a dep list purely: emit nodes for local/fetch deps,
+-- symbolic subs and input refs for all of them. Shared by the Pkg
+-- and UPkg planners.
+unix.plan.deps :
+  ([unix.Node], [Text]) -> [unix.Dep]
+    -> {Exception}
+        ([unix.Node], [Text], [(Text, unix.Ref)], [(unix.Ref, Text)])
+unix.plan.deps acc deps = match acc with
+  (nodes, seen) ->
+    step = a -> dep -> match a with
+      (ns, sn, subs, ins) -> match dep with
+        unix.Dep.Local p ->
+          (ns2, sn2) = unix.plan.go (ns, sn) p
+          pn = unix.Pkg.name p
+          ( ns2, sn2
+          , subs :+ (pn, unix.Ref.Output pn)
+          , ins :+ (unix.Ref.Drv pn, "out")
+          )
+        unix.Dep.Nixpkgs attr ->
+          (dp, op, on) = unix.index.get attr
+          ( ns, sn
+          , subs :+ (attr, unix.Ref.Path op)
+          , ins :+ (unix.Ref.Path dp, on)
+          )
+        unix.Dep.Fetch fname url sri ->
+          (ns2, sn2) = unix.plan.fetchNode (ns, sn) fname url sri
+          ( ns2, sn2
+          , subs :+ (fname, unix.Ref.Output fname)
+          , ins :+ (unix.Ref.Drv fname, "out")
+          )
+    List.foldLeft step (nodes, seen, [], []) deps
+
 unix.plan.go :
   ([unix.Node], [Text]) -> unix.Pkg -> {Exception} ([unix.Node], [Text])
 unix.plan.go acc pkg = match pkg with
@@ -423,39 +425,35 @@ unix.plan.go acc pkg = match pkg with
     (nodes, seen) ->
       if List.any (n -> n Text.== name) seen then acc
       else
-        step = a -> dep -> match a with
-          (ns, sn, subs, ins) -> match dep with
-            unix.Dep.Local p ->
-              (ns2, sn2) = unix.plan.go (ns, sn) p
-              pn = unix.Pkg.name p
-              ( ns2, sn2
-              , subs :+ (pn, unix.Ref.Output pn)
-              , ins :+ (unix.Ref.Drv pn, "out")
-              )
-            unix.Dep.Nixpkgs attr ->
-              (dp, op, on) = unix.index.get attr
-              ( ns, sn
-              , subs :+ (attr, unix.Ref.Path op)
-              , ins :+ (unix.Ref.Path dp, on)
-              )
-            unix.Dep.Fetch fname url sri ->
-              (ns2, sn2) = unix.plan.fetchNode (ns, sn) fname url sri
-              ( ns2, sn2
-              , subs :+ (fname, unix.Ref.Output fname)
-              , ins :+ (unix.Ref.Drv fname, "out")
-              )
         (nodes2, seen2, subs, ins) =
-          List.foldLeft step (nodes, seen :+ name, [], []) deps
+          unix.plan.deps (nodes, seen :+ name) deps
         (bashDrv, bashOut, bashOutName) = unix.index.get "bash"
         node =
           unix.Node.Node
             name
             (bashOut ++ "/bin/bash")
-            script
+            (unix.Action.Script script)
             subs
             (ins :+ (unix.Ref.Path bashDrv, bashOutName))
             None
         (nodes2 :+ node, seen2)
+
+-- Plan a Unison-built package: same dep resolution, ucm as the
+-- builder, the build closure carried as a value.
+unix.planU : unix.UPkg -> {Exception} unix.Plan
+unix.planU up = match up with
+  unix.UPkg.UPkg name build deps ->
+    (nodes, _, subs, ins) = unix.plan.deps ([], []) deps
+    (ucmDrv, ucmOut, ucmOutName) = unix.index.get "unison-ucm"
+    node =
+      unix.Node.Node
+        name
+        (ucmOut ++ "/bin/ucm")
+        (unix.Action.Closure build)
+        subs
+        (ins :+ (unix.Ref.Path ucmDrv, ucmOutName))
+        None
+    unix.Plan.Plan (nodes :+ node)
 
 -- Fold the plan into the daemon: add each drv, learn its path,
 -- resolve downstream references. Returns the root drv path.
@@ -468,7 +466,7 @@ unix.submit p = match p with
         Exception.raise
           (Generic.failure ("plan out of order: " ++ n) ())
     step = acc -> node -> match node with
-      unix.Node.Node name builder script subs ins fixed ->
+      unix.Node.Node name builder action subs ins fixed ->
         resolveDrv = r -> match r with
           unix.Ref.Path t -> t
           unix.Ref.Drv n -> at1 (look acc n)
@@ -477,23 +475,56 @@ unix.submit p = match p with
           unix.Ref.Path t -> t
           unix.Ref.Drv n -> at1 (look acc n)
           unix.Ref.Output n -> at2 (look acc n)
-        script' =
-          List.foldLeft
-            (s -> pr -> match pr with
-              (tok, ref) ->
-                Text.replaceAll ("@" ++ tok ++ "@") (resolveOut ref) s)
-            script
-            subs
         depDrvs =
           List.map
             (pr -> match pr with (ref, on) -> (resolveDrv ref, on))
             ins
-        (outEnv, outsJson) = match fixed with
-          Some sri -> ("", unix.fixedOutputs sri)
-          None -> (unix.placeholder "out", unix.caOutputs)
-        drvPath =
-          unix.addDrv
-            (unix.drvJson' name builder script' depDrvs outEnv outsJson)
+        drvPath = match action with
+          unix.Action.Script script ->
+            script' =
+              List.foldLeft
+                (s -> pr -> match pr with
+                  (tok, ref) ->
+                    Text.replaceAll ("@" ++ tok ++ "@") (resolveOut ref) s)
+                script
+                subs
+            (outEnv, outsJson) = match fixed with
+              Some sri -> ("", unix.fixedOutputs sri)
+              None -> (unix.placeholder "out", unix.caOutputs)
+            unix.addDrv
+              (unix.drvJson' name builder script' depDrvs outEnv outsJson)
+          unix.Action.Closure build ->
+            runnerPath =
+              unix.chomp
+                (unix.nix
+                  ["store", "add", "--mode", "flat", ".ucm-compiled/runner.uc"]
+                  "")
+            scriptFile = ".ucm-compiled/script-" ++ name ++ ".uv"
+            writeFile (FilePath scriptFile) (unix.ship build)
+            uvPath =
+              unix.chomp
+                (unix.nix ["store", "add", "--mode", "flat", scriptFile] "")
+            pathEnv =
+              Text.join
+                ":"
+                (List.map
+                  (pr -> match pr with (_, ref) -> resolveOut ref ++ "/bin")
+                  subs)
+            depEnvs =
+              List.map
+                (pr -> match pr with
+                  (n, ref) -> ("dep_" ++ n, resolveOut ref))
+                subs
+            envs =
+              [("PATH", pathEnv), ("out", unix.placeholder "out")] ++ depEnvs
+            unix.addDrv
+              (unix.drvJsonU
+                name
+                builder
+                ["run.compiled", runnerPath, uvPath]
+                envs
+                depDrvs
+                [runnerPath, uvPath])
         outText = match fixed with
           Some _ ->
             unix.chomp
@@ -508,52 +539,6 @@ unix.submit p = match p with
 
 unix.realise : unix.Pkg -> {IO, Exception} Text
 unix.realise pkg = unix.submit (unix.plan pkg)
-
--- Resolve a dep list to (name, drvPath, outputName, substText)
--- tuples. Local deps realise recursively (cache threads through);
--- their substText is an upstream placeholder. Nixpkgs and Fetch
--- deps have literal paths.
-unix.resolveDeps :
-  [(Text, Text)] -> [unix.Dep]
-    -> {IO, Exception} ([(Text, Text)], [(Text, Text, Text, Text)])
-unix.resolveDeps cache deps =
-  step = acc -> dep -> match acc with
-    (c, resolved) -> match dep with
-      unix.Dep.Local p ->
-        (c2, drvPath) = unix.realise.go c p
-        sub = unix.upstreamPlaceholder drvPath "out"
-        (c2, resolved :+ (unix.Pkg.name p, drvPath, "out", sub))
-      unix.Dep.Nixpkgs attr ->
-        (drvPath, outPath, outName) = unix.resolveNixpkgs attr
-        printLine ("  nixpkgs " ++ attr ++ " -> " ++ drvPath)
-        (c, resolved :+ (attr, drvPath, outName, outPath))
-      unix.Dep.Fetch fname url sri ->
-        (drvPath, outPath) = unix.fetch fname url sri
-        printLine ("  fetch " ++ fname ++ " -> " ++ drvPath)
-        (c, resolved :+ (fname, drvPath, "out", outPath))
-  List.foldLeft step (cache, []) deps
-
-unix.realise.go :
-  [(Text, Text)] -> unix.Pkg -> {IO, Exception} ([(Text, Text)], Text)
-unix.realise.go cache pkg = match pkg with
-  unix.Pkg.Pkg name script deps ->
-    match unix.assoc.lookup name cache with
-      Some path -> (cache, path)
-      None ->
-        (cache2, resolvedDeps) = unix.resolveDeps cache deps
-        subst = s -> info -> match info with
-          (depName, _, _, sub) ->
-            Text.replaceAll ("@" ++ depName ++ "@") sub s
-        script' = List.foldLeft subst script resolvedDeps
-        depDrv = info -> match info with
-          (_, drvPath, outName, _) -> (drvPath, outName)
-        (bashDrv, bashOut, bashOutName) = unix.resolveNixpkgs "bash"
-        depDrvs = List.map depDrv resolvedDeps :+ (bashDrv, bashOutName)
-        drvPath =
-          unix.addDrv
-            (unix.drvJson name (bashOut ++ "/bin/bash") script' depDrvs)
-        printLine ("  drv " ++ name ++ " -> " ++ drvPath)
-        (cache2 :+ (name, drvPath), drvPath)
 
 -- ----------------------------------------------------------------
 -- Typed derivations. `nix derivation show` emits the same schema
@@ -1026,44 +1011,7 @@ unix.drvJsonU name builder args envs depDrvs srcs =
       ])
 
 unix.realiseU : unix.UPkg -> {IO, Exception} Text
-unix.realiseU up = match up with
-  unix.UPkg.UPkg name build deps ->
-    (ucmDrv, ucmOut, ucmOutName) = unix.resolveNixpkgs "unison-ucm"
-    (_, resolved) = unix.resolveDeps [] deps
-    runnerPath =
-      unix.chomp
-        (unix.nix
-          ["store", "add", "--mode", "flat", ".ucm-compiled/runner.uc"]
-          "")
-    scriptFile = ".ucm-compiled/script-" ++ name ++ ".uv"
-    writeFile (FilePath scriptFile) (unix.ship build)
-    uvPath =
-      unix.chomp
-        (unix.nix ["store", "add", "--mode", "flat", scriptFile] "")
-    printLine ("  script " ++ name ++ " -> " ++ uvPath)
-    pathEnv =
-      Text.join
-        ":"
-        (List.map (i -> match i with (_, _, _, sub) -> sub ++ "/bin") resolved)
-    depEnvs =
-      List.map
-        (i -> match i with (n, _, _, sub) -> ("dep_" ++ n, sub))
-        resolved
-    envs =
-      [("PATH", pathEnv), ("out", unix.placeholder "out")] ++ depEnvs
-    depDrv = i -> match i with (_, drvPath, outName, _) -> (drvPath, outName)
-    depDrvs = List.map depDrv resolved :+ (ucmDrv, ucmOutName)
-    drvPath =
-      unix.addDrv
-        (unix.drvJsonU
-          name
-          (ucmOut ++ "/bin/ucm")
-          ["run.compiled", runnerPath, uvPath]
-          envs
-          depDrvs
-          [runnerPath, uvPath])
-    printLine ("  drv " ++ name ++ " -> " ++ drvPath)
-    drvPath
+unix.realiseU up = unix.submit (unix.planU up)
 
 -- ----------------------------------------------------------------
 -- A tiny package set.
