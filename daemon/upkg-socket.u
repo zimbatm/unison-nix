@@ -1,0 +1,107 @@
+-- Socket-native realise: build an upkg package entirely over the
+-- daemon socket -- no `nix` subprocess. It renders each plan node
+-- as ATerm (reusing nixd.drvATerm), adds it with nixd.addDrv, then
+-- nixd.buildPaths + nixd.queryOutputs. Scoped to floating-CA Script
+-- nodes (greeting/banner/shout); fixed-output fetches keep the CLI.
+
+-- /nix/store/HASH-name/... -> /nix/store/HASH-name
+upkg.socket.storeRoot : Text -> Text
+upkg.socket.storeRoot p = match Text.split ?/ p with
+  _ +: (_ +: (_ +: (nm +: _))) -> "/nix/store/" ++ nm
+  _ -> p
+
+-- The structuredAttrs JSON upkg embeds, rendered as the __json
+-- value. Key order matches drvJson': builder, name, outputs, system.
+upkg.socket.structuredAttrs : Text -> Text -> Text
+upkg.socket.structuredAttrs name builder =
+  "{\"builder\":\"" ++ builder ++ "\",\"name\":\"" ++ name
+    ++ "\",\"outputs\":[\"out\"],\"system\":\"x86_64-linux\"}"
+
+-- Render one floating-CA Script node as ATerm, matching drvJson'
+-- (args get the attrs prelude; env is __json + out).
+upkg.socket.drvATerm : Text -> Text -> Text -> [(Text, Text)] -> Text
+upkg.socket.drvATerm name builder script depDrvs =
+  args = ["-c", upkg.attrsPrelude ++ script]
+  env =
+    [ ("__json", upkg.socket.structuredAttrs name builder)
+    , ("out", upkg.placeholder "out")
+    ]
+  nixd.drvATerm builder args env (upkg.groupDeps depDrvs) []
+
+upkg.socket.dedup : [Text] -> [Text]
+upkg.socket.dedup =
+  List.foldLeft
+    (acc -> x -> if List.any (y -> y Text.== x) acc then acc else acc :+ x)
+    []
+
+-- Fold the plan, adding each node's .drv over the socket. Returns
+-- the root drv path. Mirrors upkg.submit's ref resolution.
+upkg.socket.submit : Socket -> upkg.Plan -> {IO, Exception} Text
+upkg.socket.submit sock p = match p with
+  upkg.Plan.Plan nodes ->
+    look = acc -> n -> match Map.get n acc with
+      Some b -> b
+      None -> bug ("plan out of order", n)
+    step = acc -> cases
+      upkg.Node.Node name builder action subs ins fixed ->
+        resolveDrv = cases
+          upkg.Ref.Path t -> t
+          upkg.Ref.Drv n -> upkg.Built.drv (look acc n)
+          upkg.Ref.Output n -> upkg.Built.drv (look acc n)
+        resolveOut = cases
+          upkg.Ref.Path t -> t
+          upkg.Ref.Drv n -> upkg.Built.drv (look acc n)
+          upkg.Ref.Output n -> upkg.Built.out (look acc n)
+        depDrvs = List.map (cases (ref, on) -> (resolveDrv ref, on)) ins
+        drvPath = match action with
+          upkg.Action.Script script ->
+            script' =
+              List.foldLeft
+                (s -> cases (tok, ref) ->
+                  Text.replaceAll ("@" ++ tok ++ "@") (resolveOut ref) s)
+                script
+                subs
+            aterm = upkg.socket.drvATerm name builder script' depDrvs
+            subRoots =
+              List.filterMap
+                (cases (_, ref) -> let
+                  o = resolveOut ref
+                  if Text.startsWith "/nix/store/" o then
+                    Some (upkg.socket.storeRoot o)
+                  else None)
+                subs
+            refs =
+              upkg.socket.dedup
+                (List.map at1 depDrvs
+                  ++ (upkg.socket.storeRoot builder +: subRoots))
+            nixd.addDrv sock (name ++ ".drv") aterm refs
+          upkg.Action.Closure _ ->
+            bug ("socket submit: closures not supported yet", name)
+        printLine ("  drv " ++ name ++ " -> " ++ drvPath)
+        Map.put name (upkg.Built.Built drvPath (upkg.placeholder "out")) acc
+    final = List.foldLeft step Map.empty nodes
+    match List.last nodes with
+      Some n -> upkg.Built.drv (look final (upkg.Node.name n))
+      None -> Exception.raise (Generic.failure "empty plan" ())
+
+-- Build a realised drv over the socket and read its output path.
+upkg.socket.build : Socket -> Text -> {IO, Exception} Text
+upkg.socket.build sock drvPath =
+  nixd.buildPaths sock [drvPath ++ "!out"]
+  match upkg.lookup "out" (nixd.queryOutputs sock drvPath) with
+    Some o -> o
+    None -> Exception.raise (Generic.failure "no out in output map" ())
+
+-- The entrypoint: realise shout entirely over the socket.
+upkg.socket.main : '{IO, Exception} ()
+upkg.socket.main = do
+  sock =
+    match lib.sockimpl "/nix/var/nix/daemon-socket/socket" with
+      Right s -> s
+      Left f -> raise f
+  _ = nixd.handshake sock
+  printLine "realising greeting over the socket (no nix subprocess) ..."
+  drv = upkg.socket.submit sock (upkg.plan pkgs.greeting)
+  printLine ("building " ++ drv ++ " ...")
+  out = upkg.socket.build sock drv
+  printLine ("out: " ++ out)

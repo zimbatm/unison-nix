@@ -105,17 +105,25 @@ nixd.processStderr sock =
   !loop
 
 -- A logger field list: count, then each is (type, int|string).
+-- Explicit recursion (not List.range) so a zero-field frame reads
+-- exactly zero fields -- an off-by-one here misaligns the whole
+-- build stream.
 nixd.readFields : Socket -> {IO, Exception} ()
 nixd.readFields sock =
   n = nixd.recvNat sock
-  one = _ -> let
+  nixd.readFields.go sock n 0
+
+nixd.readFields.go : Socket -> Nat -> Nat -> {IO, Exception} ()
+nixd.readFields.go sock n i =
+  if i >= n then ()
+  else
     ty = nixd.recvNat sock
-    if ty == 0 then
-      _ = nixd.recvNat sock
-      ()
-    else nixd.skipStr sock
-  _ = List.map one (List.range 0 n)
-  ()
+    _ =
+      if ty == 0 then nixd.recvNat sock
+      else
+        nixd.skipStr sock
+        0
+    nixd.readFields.go sock n (i + 1)
 
 -- Handshake, then return the negotiated daemon version.
 nixd.handshake : Socket -> {IO, Exception} Nat

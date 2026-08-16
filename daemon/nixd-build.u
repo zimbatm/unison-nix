@@ -67,8 +67,13 @@ nixd.queryOutputs sock drvPath =
   Socket.send sock (nixd.putStr drvPath)
   nixd.processStderr sock
   n = nixd.recvNat sock
-  readOne = _ -> let
+  nixd.queryOutputs.go sock n 0
+
+nixd.queryOutputs.go :
+  Socket -> Nat -> Nat -> {IO, Exception} [(Text, Text)]
+nixd.queryOutputs.go sock n i =
+  if i >= n then []
+  else
     k = nixd.recvStr sock
     v = nixd.recvStr sock
-    (k, v)
-  List.map readOne (List.range 0 n)
+    (k, v) +: nixd.queryOutputs.go sock n (i + 1)

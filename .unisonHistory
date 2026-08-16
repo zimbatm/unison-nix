@@ -1,3 +1,4 @@
+find Text.takeWhile
 delete.term site.badPkg
 load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/bad.u
 compile upkg.Sh.runner .ucm-compiled/runner
@@ -97,4 +98,3 @@ update
 load src/site.u
 update
 load src/pkgs.u
-update

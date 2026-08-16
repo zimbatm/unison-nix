@@ -132,3 +132,29 @@ runs on stock ucm (release 1.3.0), which lacks the `unixClientSocket`
 builtin. The clean fix is shipping the builtin in a forked `@unison/base`
 (`daemon/af-unix.patch` is the runtime side); then upkg runs on stock ucm
 and the CLI spawns become socket calls with no per-project ceremony.
+
+
+## Socket-native upkg build -- status
+
+`daemon/upkg-socket.u` renders upkg's real derivations (structuredAttrs,
+floating-CA) as ATerm and adds them over the socket. Proven correct: the
+Unison-rendered greeting ATerm hashes to the SAME drv path as the real
+greeting.drv, and that socket-added drv builds (via CLI) to the identical
+CA output `/nix/store/hm998kib...-greeting`. So `upkg.socket.submit`
+produces correct derivations over the socket with no `nix derivation add`.
+
+Two issues remain for a full end-to-end Unison realise:
+1. **CA output query needs the 1.38 feature handshake.** Advertising
+   protocol 1.33 (to skip feature negotiation) also drops the
+   `realisation-with-path-not-hash` feature, so `queryRealisation` (op 43)
+   errors and `queryDerivationOutputMap` (op 41) returns an empty path for
+   floating-CA outputs. Reading a realised CA path back requires the full
+   1.38 handshake advertising that feature (bounded, not yet done).
+2. **A Unison-runtime OOM draining a multi-frame build.** `processStderr`
+   handles a simple build's few frames but OOMs on a structuredAttrs
+   build's ~40 START/RESULT/STOP frames -- while a byte-for-byte Python
+   mirror of the exact same logic handles all 40 cleanly. Cause not yet
+   found; needs deeper instrumentation.
+
+The rendering and add half is done and proven; the read-back and the
+runtime OOM are the remaining, identified work.
