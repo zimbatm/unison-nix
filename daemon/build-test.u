@@ -1,0 +1,28 @@
+nixd.unixConnect : Text ->{IO, Exception} Socket
+nixd.unixConnect path =
+  match lib.sockimpl path with
+    Right s -> s
+    Left f -> raise f
+
+nixd.buildMain : '{IO, Exception} ()
+nixd.buildMain = do
+  sock = nixd.unixConnect "/nix/var/nix/daemon-socket/socket"
+  _ = nixd.handshake sock
+  bash = "/nix/store/bbzjxfam8vv1nyikn5dsrazsw4ya5vzx-bash-interactive-5.3p9"
+  aterm =
+    nixd.drvATerm
+      (bash ++ "/bin/bash")
+      ["-c", "echo built by unison over the socket > $out"]
+      [ ("builder", bash ++ "/bin/bash")
+      , ("name", "unison-build")
+      , ("out", "/1rz4g4znpzjwh1xymhjpm42vipw92pr73vdgl6xs1hycac8kf2n9")
+      , ("system", "x86_64-linux")
+      ]
+      []
+      [bash]
+  drv = nixd.addDrv sock "unison-build.drv" aterm [bash]
+  printLine ("added drv -> " ++ drv)
+  nixd.buildPaths sock [drv ++ "!out"]
+  printLine "built ok"
+  outs = nixd.queryOutputs sock drv
+  List.foreach (cases (k, v) -> printLine ("  " ++ k ++ " -> " ++ v)) outs

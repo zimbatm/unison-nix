@@ -53,6 +53,18 @@ nixd.recvStr sock =
   _ = if pad > 0 then nixd.recvN sock pad else Bytes.empty
   Text.fromUtf8 bs
 
+-- Read and discard a length-prefixed string WITHOUT decoding.
+-- Build-log lines and activity fields in the stderr stream are not
+-- guaranteed to be valid UTF-8, so processStderr must not decode
+-- the strings it only skips.
+nixd.skipStr : Socket -> {IO, Exception} ()
+nixd.skipStr sock =
+  n = nixd.recvNat sock
+  _ = nixd.recvN sock n
+  pad = Nat.mod (Nat.diff 8 (Nat.mod n 8)) 8
+  _ = if pad > 0 then nixd.recvN sock pad else Bytes.empty
+  ()
+
 -- STDERR_LAST = 0x616c7473 ; STDERR_ERROR = 0x63787470.
 -- The daemon interleaves log messages before each reply; drain
 -- them until LAST, raising on ERROR.
@@ -69,12 +81,41 @@ nixd.processStderr sock =
       msg = nixd.recvStr sock
       Exception.raise (Generic.failure ("nixd error: " ++ msg) ())
     else if tag == 0x6f6c6d67 then         -- NEXT: a log line
-      _ = nixd.recvStr sock
+      nixd.skipStr sock
       !loop
-    else                                    -- START/STOP/RESULT: skip fields
-      _ = nixd.recvStr sock
+    else if tag == 0x53545254 then         -- START_ACTIVITY (build)
+      _act = nixd.recvNat sock
+      _lvl = nixd.recvNat sock
+      _typ = nixd.recvNat sock
+      nixd.skipStr sock
+      nixd.readFields sock
+      _parent = nixd.recvNat sock
+      !loop
+    else if tag == 0x53544f50 then         -- STOP_ACTIVITY
+      _act = nixd.recvNat sock
+      !loop
+    else if tag == 0x52534c54 then         -- RESULT
+      _act = nixd.recvNat sock
+      _rtyp = nixd.recvNat sock
+      nixd.readFields sock
+      !loop
+    else                                    -- unknown: a single string
+      nixd.skipStr sock
       !loop
   !loop
+
+-- A logger field list: count, then each is (type, int|string).
+nixd.readFields : Socket -> {IO, Exception} ()
+nixd.readFields sock =
+  n = nixd.recvNat sock
+  one = _ -> let
+    ty = nixd.recvNat sock
+    if ty == 0 then
+      _ = nixd.recvNat sock
+      ()
+    else nixd.skipStr sock
+  _ = List.map one (List.range 0 n)
+  ()
 
 -- Handshake, then return the negotiated daemon version.
 nixd.handshake : Socket -> {IO, Exception} Nat

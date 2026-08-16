@@ -112,9 +112,19 @@ each current spawn needs:
   `fixed:sha256` + raw bytes (`nixd.addToStoreFlat`). Both proven
   byte-identical to the CLI -- a flat add over the socket returns the
   same store path as `nix store add --mode flat`.
-- `nix derivation add` -> render the drv as ATerm (not JSON) and
-  `addToStore` it as `text:sha256`; bounded serializer work.
-- `nix build ^out` -> `wopBuildPaths` + `queryPathInfo`; bounded.
+- `nix derivation add` -> **DONE.** `nixd.drvATerm` renders the drv in
+  the on-disk ATerm format (floating-CA outputs as `("out","","r:sha256","")`,
+  escaping per nix's printString), `nixd.addDrv` adds it as `text:sha256`.
+- `nix build ^out` -> **DONE.** `nixd.buildPaths` (Op::BuildPaths, derived
+  paths as `<drv>!out`, BuildMode Normal, plus the trailing success value)
+  and `nixd.queryOutputs` (Op::QueryDerivationOutputMap = 41) read the
+  realised CA output path back. `build-test.u` runs the whole cycle from
+  Unison: render, add, build, query -- output at
+  /nix/store/...-unison-build with the expected content, no nix
+  subprocess.
+  Gotcha (thanks to a reviewer): stderr strings (build logs, activity
+  fields) are NOT guaranteed UTF-8, so processStderr skips them as raw
+  bytes (`nixd.skipStr`) rather than decoding.
 - `nix eval` -> no protocol op (evaluation is client-side); stays CLI.
 
 The one real blocker to making the socket the DEFAULT: upkg's main flow

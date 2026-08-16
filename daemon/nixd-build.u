@@ -1,0 +1,74 @@
+-- The build cycle over the socket: render a derivation as ATerm,
+-- add it (addToStore text), build it (wopBuildPaths), and read the
+-- output path (queryDerivationOutputMap). This is what replaces
+-- upkg's `nix derivation add` + `nix build` subprocesses. Proven
+-- against nix 2.35.
+
+-- ATerm strings. Unquoted = raw (paths, output names never contain
+-- specials). Quoted = escaped (builder, args, env values).
+nixd.aterm.unq : Text -> Text
+nixd.aterm.unq s = "\"" ++ s ++ "\""
+
+nixd.aterm.esc : Text -> Text
+nixd.aterm.esc s =
+  e = Text.replaceAll "\\" "\\\\" s
+  e2 = Text.replaceAll "\"" "\\\"" e
+  e3 = Text.replaceAll "\n" "\\n" e2
+  "\"" ++ e3 ++ "\""
+
+-- Render a floating content-addressed derivation (single "out",
+-- recursive sha256) to the on-disk ATerm format.
+nixd.drvATerm :
+  Text -> [Text] -> [(Text, Text)] -> [(Text, [Text])] -> [Text] -> Text
+nixd.drvATerm builder args env inputDrvs inputSrcs =
+  use nixd.aterm unq esc
+  commas = Text.join ","
+  outs =
+    "[(" ++ unq "out" ++ "," ++ unq "" ++ "," ++ unq "r:sha256" ++ ","
+      ++ unq "" ++ ")]"
+  drvE = cases
+    (d, os) -> "(" ++ unq d ++ ",[" ++ commas (List.map unq os) ++ "])"
+  indrvs = "[" ++ commas (List.map drvE inputDrvs) ++ "]"
+  insrcs = "[" ++ commas (List.map unq inputSrcs) ++ "]"
+  envE = cases (k, v) -> "(" ++ esc k ++ "," ++ esc v ++ ")"
+  envS = "[" ++ commas (List.map envE env) ++ "]"
+  argsS = "[" ++ commas (List.map esc args) ++ "]"
+  "Derive(" ++ outs ++ "," ++ indrvs ++ "," ++ insrcs ++ ","
+    ++ unq "x86_64-linux" ++ "," ++ esc builder ++ "," ++ argsS ++ ","
+    ++ envS ++ ")"
+
+-- Add a rendered .drv as a text store object. refs are the store
+-- paths it mentions (inputSrcs + inputDrvs). Returns the drv path.
+nixd.addDrv : Socket -> Text -> Text -> [Text] -> {IO, Exception} Text
+nixd.addDrv sock name aterm refs =
+  Socket.send sock (nixd.putNat 7)               -- Op::AddToStore
+  Socket.send sock (nixd.putStr name)
+  Socket.send sock (nixd.putStr "text:sha256")   -- a text object (the .drv)
+  Socket.send sock (nixd.putPaths refs)
+  Socket.send sock (nixd.putNat 0)               -- repair
+  Socket.send sock (nixd.putFramed (Text.toUtf8 aterm))
+  nixd.processStderr sock
+  nixd.recvStr sock
+
+-- Build a list of derived paths ("<drv>!out"). Op::BuildPaths.
+nixd.buildPaths : Socket -> [Text] -> {IO, Exception} ()
+nixd.buildPaths sock derivedPaths =
+  Socket.send sock (nixd.putNat 9)               -- Op::BuildPaths
+  Socket.send sock (nixd.putPaths derivedPaths)
+  Socket.send sock (nixd.putNat 0)               -- BuildMode = Normal
+  nixd.processStderr sock
+  _ = nixd.recvNat sock                          -- trailing success value
+  ()
+
+-- Op::QueryDerivationOutputMap = 41. Returns (outputName, path).
+nixd.queryOutputs : Socket -> Text -> {IO, Exception} [(Text, Text)]
+nixd.queryOutputs sock drvPath =
+  Socket.send sock (nixd.putNat 41)
+  Socket.send sock (nixd.putStr drvPath)
+  nixd.processStderr sock
+  n = nixd.recvNat sock
+  readOne = _ -> let
+    k = nixd.recvStr sock
+    v = nixd.recvStr sock
+    (k, v)
+  List.map readOne (List.range 0 n)
