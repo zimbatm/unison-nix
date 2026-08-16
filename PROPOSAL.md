@@ -5,6 +5,10 @@
 > (rev `26.11-pre`, 43,954 .nix files, 4.46M lines). Nothing here is
 > implemented beyond what the spike demonstrates. Treat it as a discussion
 > document.
+>
+> Update: all six suggested first milestones (section 10) are now
+> demonstrated in the spike -- daemon protocol (live), cargo, the graft,
+> trivial builders, the claims store, and the release aggregate.
 
 ## 0. TL;DR
 
@@ -416,11 +420,19 @@ The spike already built the bridges, in increasing independence:
 1. Speak the daemon protocol directly (drop process spawning) —
    **currently blocked**: Unison base has TCP sockets but no AF_UNIX,
    and the nix-daemon listens only on a unix socket.
-2. Trivial-builder vocabulary + `Normalizer` library.
+2. Trivial-builder vocabulary — **done in the spike**: writeText,
+   runCommand, symlinkJoin (lndir semantics), linkFarm; `./run.sh
+   profile` merges a Unison-built package with a nixpkgs one.
 3. Cargo ecosystem end-to-end (parse/plan/fetch/assemble/verify) —
    **done in the spike**: `./run.sh hexyl` builds hexyl 0.16.0 from its
    Cargo.lock, 67 per-crate FODs with lockfile-supplied hashes, vendor
    assembly by a Unison closure, offline cargo build.
-4. The claims store prototype on Unison Share.
+4. The claims store — **done in the spike**: `./run.sh claims` keys
+   advisories by content hash; an exemption names an exact hash and
+   cannot leak to a rebuild under the same name (fixing
+   permittedInsecurePackages). Handler lattice from problems.nix.
 5. `rebind` (typed graft) with CA cutoff measurement on a real CVE scenario.
-6. A curated namespace with a release-blocking test aggregate, even if tiny.
+6. A curated release namespace — **done in the spike**: `./run.sh
+   release` runs a curated set + smoke tests; the release advances only
+   when all pass, and its identity is a hash of the constituents'
+   outputs (a channel as a content-addressed value).
