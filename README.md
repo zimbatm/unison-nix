@@ -15,6 +15,11 @@ This repo is a spike. It tests one idea: replace the Nix expression
 language with Unison, the way Guix replaced it with Scheme. The Nix
 daemon and store stay. The language goes.
 
+See [PROPOSAL.md](PROPOSAL.md) for where this could go: a design
+sketch for a nixpkgs-shaped package repository on this foundation,
+based on a deep survey of the nixpkgs source and measured
+eval-performance comparisons.
+
 ## Status: it works
 
 ```
