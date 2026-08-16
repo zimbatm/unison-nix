@@ -1,4 +1,50 @@
 compile upkg.Sh.runner .ucm-compiled/runner
+compile pkgs.test.main .ucm-compiled/test
+compile pkgs.main .ucm-compiled/upkg
+update
+load src/pkgs.u
+update
+load src/upkg.u
+compile upkg.Sh.runner .ucm-compiled/runner
+compile pkgs.test.main .ucm-compiled/test
+compile pkgs.main .ucm-compiled/upkg
+update
+load src/pkgs.u
+update
+load src/upkg.u
+compile upkg.Sh.runner .ucm-compiled/runner
+compile pkgs.test.main .ucm-compiled/test
+compile pkgs.main .ucm-compiled/upkg
+update
+load src/pkgs.u
+update
+load src/upkg.u
+delete.term upkg.test.main
+delete.term upkg.dispatch
+delete.term upkg.main
+update
+load src/pkgs.u
+update
+load src/upkg.u
+compile upkg.Sh.runner .ucm-compiled/runner
+compile upkg.test.main .ucm-compiled/test
+compile upkg.main .ucm-compiled/upkg
+update
+load src/upkg.u
+compile upkg.Sh.runner .ucm-compiled/runner
+compile upkg.test.main .ucm-compiled/test
+compile upkg.main .ucm-compiled/upkg
+update
+load src/upkg.u
+update
+load src/upkg.u
+compile upkg.Sh.runner .ucm-compiled/runner
+compile upkg.test.main .ucm-compiled/test
+compile upkg.main .ucm-compiled/upkg
+update
+load src/upkg.u
+find Char.fromNat
+compile upkg.Sh.runner .ucm-compiled/runner
 compile upkg.test.main .ucm-compiled/test
 compile upkg.main .ucm-compiled/upkg
 update
@@ -52,49 +98,3 @@ update
 load src/upkg.u
 project.rename upkg
 move.namespace upkgs upkg
-compile upkgs.Sh.runner .ucm-compiled/runner
-compile upkgs.test.main .ucm-compiled/test
-compile upkgs.main .ucm-compiled/upkgs
-update
-load src/upkgs.u
-project.rename upkgs
-move.namespace unix upkgs
-compile unix.Sh.runner .ucm-compiled/runner
-compile unix.test.main .ucm-compiled/test
-compile unix.main .ucm-compiled/unix
-update
-load src/unix.u
-update
-load src/unix.u
-delete.term unix.fetch
-delete.term unix.resolveDeps
-delete.term unix.realise.go
-delete.term unix.Node.script.modify
-delete.term unix.Node.script.set
-delete.term unix.Node.script
-compile unix.Sh.runner .ucm-compiled/runner
-compile unix.test.main .ucm-compiled/test
-compile unix.main .ucm-compiled/unix
-update
-load src/unix.u
-delete.namespace benchset
-add
-load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/benchset5000.u
-ls benchset
-add
-load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/benchset1000.u
-add
-load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/benchset1000.u
-compile bench.main /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/bench
-add
-load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/bench.u
-compile unix.Sh.runner .ucm-compiled/runner
-compile unix.test.main .ucm-compiled/test
-compile unix.main .ucm-compiled/unix
-update
-load src/unix.u
-update
-load src/nixpkgs-index.u
-compile unix.Sh.runner .ucm-compiled/runner
-compile unix.test.main .ucm-compiled/test
-compile unix.main .ucm-compiled/unix

@@ -300,6 +300,40 @@ This is the lockfile pattern from PROPOSAL.md §5.2, implemented:
 One wrinkle: Unison base has no setenv, so `CARGO_HOME` is passed
 by spawning through coreutils' `env(1)`.
 
+## The quine: upkg packages upkg
+
+```
+$ ./run.sh upkg
+realising upkg (the quine) ...
+out: /nix/store/9iaf0hiz...-upkg
+
+$ cd /anywhere && /nix/store/9iaf0hiz...-upkg/bin/upkg shout
+...
+out: /nix/store/1fjn12k4...-shout
+```
+
+`pkgs.self` is a package whose build script is a shipped closure
+referencing `pkgs.dispatch` — so the entire frontend, pinned
+nixpkgs index included, rides along in the ~280 KB envelope. The
+closure is dual-mode: invoked by the sandbox with no arguments it
+finds its own serialized envelope via `/proc/$PPID/cmdline`,
+copies it into `$out/lib/upkg.uv`, and writes a `bin/upkg`
+wrapper; invoked from the store with arguments, it *is* the
+package manager. The store artifact builds the rest of the
+package set from any directory.
+
+Two traps found on the way: `/proc/self` inside a spawned child
+is the child, not the runner (hence `$PPID` through `/bin/sh`),
+and `/proc` files stat as zero bytes, so size-based reads return
+nothing.
+
+This also surfaced the one place the spike genuinely needed
+nixpkgs-style laziness: `script -> dispatch -> registry -> self ->
+script` is a value cycle, and strict Unison rejects it. The fix is
+the one PROPOSAL.md prescribes — route the cycle through a lambda
+(the quine is dispatched directly rather than listed in the
+registry value).
+
 ## Configuration across stages: one value, three bind times
 
 `./run.sh nginx` builds an nginx server from one typed record:
@@ -402,9 +436,11 @@ bash.
 
 ## Layout
 
-- `src/upkg.u` — the whole spike. Base32, placeholders, derivation
+- `src/upkg.u` — the library: Base32, placeholders, derivation
   JSON, process handling, nixpkgs eval, graph realisation, a demo
   package set.
+- `src/pkgs.u` — the demo package set and entry points, consuming
+  the library from the codebase.
 - `src/nixpkgs-index.u` — generated pinned index of nixpkgs attrs.
   Synced into the codebase by `run.sh`.
 - `setup.md` — UCM transcript. It creates the codebase and installs
@@ -426,6 +462,7 @@ nix develop          # or: nix shell nixpkgs#unison-ucm
 ./run.sh shout       # build a package with nixpkgs dependencies
 ./run.sh hello       # compile GNU hello from the upstream tarball
 ./run.sh hexyl       # build a real Rust tool from its Cargo.lock
+./run.sh upkg        # upkg packages itself (the quine)
 ./run.sh uni-hello   # override nixpkgs hello with a pure function
 ./run.sh deep-hello  # override stdenv, rewrite the closure
 ./run.sh ugreeting   # build with a Unison build script
