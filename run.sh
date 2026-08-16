@@ -26,20 +26,20 @@ fi
 # files; ./run.sh index regenerates the index file, which makes the
 # stamp stale and triggers a recompile on the next run.
 cache=.ucm-compiled
-cur=$(cat src/unix.u src/nixpkgs-index.u | sha256sum | cut -d' ' -f1)
-if [ ! -f "$cache/unix.uc" ] || [ "$(cat "$cache/stamp" 2>/dev/null)" != "$cur" ]; then
+cur=$(cat src/upkg.u src/nixpkgs-index.u | sha256sum | cut -d' ' -f1)
+if [ ! -f "$cache/upkg.uc" ] || [ "$(cat "$cache/stamp" 2>/dev/null)" != "$cur" ]; then
   echo "Compiling frontend ..." >&2
   mkdir -p "$cache"
-  out=$(printf 'load src/unix.u\nupdate\ncompile unix.main %s\ncompile unix.test.main %s\ncompile unix.Sh.runner %s\n' \
-    "$cache/unix" "$cache/test" "$cache/runner" | ucm -c .ucm 2>&1) || true
+  out=$(printf 'load src/upkg.u\nupdate\ncompile upkg.main %s\ncompile upkg.test.main %s\ncompile upkg.Sh.runner %s\n' \
+    "$cache/upkg" "$cache/test" "$cache/runner" | ucm -c .ucm 2>&1) || true
   # ucm exits 0 even when the load fails; without this check, compile
   # would silently emit bytecode for the stale codebase version.
   if echo "$out" | grep -qE 'reserved keyword|I got confused|I was surprised|Typechecking failed|could not|blocked'; then
     echo "$out" >&2
-    echo "compile failed: src/unix.u has errors" >&2
+    echo "compile failed: src/upkg.u has errors" >&2
     exit 1
   fi
-  if [ ! -f "$cache/unix.uc" ] || [ "$cache/unix.uc" -ot src/unix.u ]; then
+  if [ ! -f "$cache/upkg.uc" ] || [ "$cache/upkg.uc" -ot src/upkg.u ]; then
     echo "$out" >&2
     echo "compile failed" >&2
     exit 1
@@ -49,8 +49,8 @@ fi
 
 case "${1:-}" in
   test)  exec ucm run.compiled "$cache/test.uc" ;;
-  index) ucm run.compiled "$cache/unix.uc" index
+  index) ucm run.compiled "$cache/upkg.uc" index
          sync_index
          echo "index synced into codebase" ;;
-  *)     exec ucm run.compiled "$cache/unix.uc" "$@" ;;
+  *)     exec ucm run.compiled "$cache/upkg.uc" "$@" ;;
 esac

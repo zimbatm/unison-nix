@@ -1,4 +1,4 @@
-# unix — Unison as a frontend to Nix
+# upkg — Unison as a frontend to Nix
 
 > [!WARNING]
 > **Set your expectations accordingly.** This repository is 100%
@@ -150,15 +150,15 @@ Hello, world!
 ```
 
 This imports the nixpkgs `hello` derivation as a typed Unison value
-(`unix.Drv`) and overrides it with a pure function:
+(`upkg.Drv`) and overrides it with a pure function:
 
 ```unison
-pkgs.uniHello.override : unix.Drv -> unix.Drv
+pkgs.uniHello.override : upkg.Drv -> upkg.Drv
 pkgs.uniHello.override d =
-  d |> unix.Drv.rename "hello-uni"
-    |> unix.Drv.setAttr "configureFlags"
+  d |> upkg.Drv.rename "hello-uni"
+    |> upkg.Drv.setAttr "configureFlags"
          (Json.array [Json.text "--program-prefix=uni-"])
-    |> unix.Drv.setAttr "doCheck" (Json.Boolean false)
+    |> upkg.Drv.setAttr "doCheck" (Json.Boolean false)
 ```
 
 No `overrideAttrs`, no fixpoints, no `mkDerivation` internals. The
@@ -168,7 +168,7 @@ Three facts make this work:
 
 - `nix derivation show` emits the same schema version 4 JSON that
   `nix derivation add` accepts. Import is parse; export is print.
-- `unix.Drv.caify` converts the input-addressed derivation to
+- `upkg.Drv.caify` converts the input-addressed derivation to
   floating CA: the old output paths become placeholders, and the
   daemon computes fresh paths. The frontend never recomputes
   output-path hashes for the changed derivation.
@@ -227,12 +227,12 @@ The build script that runs *inside* the sandbox can be Unison too.
 `./run.sh uhello` compiles GNU hello with this build script:
 
 ```unison
-pkgs.uhello.script : '{IO, Exception, unix.Sh} ()
+pkgs.uhello.script : '{IO, Exception, upkg.Sh} ()
 pkgs.uhello.script = do
-  use unix.Sh run cd dep
+  use upkg.Sh run cd dep
   run "tar" ["xzf", dep "hello-src"]
   cd "hello-2.12.1"
-  run "./configure" ["--prefix=" ++ unix.Sh.out]
+  run "./configure" ["--prefix=" ++ upkg.Sh.out]
   run "make" []
   run "make" ["install"]
 ```
@@ -274,16 +274,16 @@ code it needs to ship without consulting the codebase.
 `./run.sh nginx` builds an nginx server from one typed record:
 
 ```unison
-type unix.NginxConfig =
+type upkg.NginxConfig =
   { port : Nat                        -- binds at build time
   , workers : Nat
   , gzip : Boolean
-  , content : unix.Pkg                -- binds at eval time
-  , auth : Optional (Text, unix.Secret)  -- binds at run time
+  , content : upkg.Pkg                -- binds at eval time
+  , auth : Optional (Text, upkg.Secret)  -- binds at run time
   }
 
 pkgs.unginx =
-  unix.mkNginx
+  upkg.mkNginx
     (NginxConfig 8080 2 true pkgs.banner
       (Some ("admin", Secret.FromEnv "NGINX_PASSWORD")))
 ```
@@ -291,7 +291,7 @@ pkgs.unginx =
 - `content` shapes the derivation graph at eval time: the package
   to serve becomes a `Local` dep, built by this frontend.
 - `port`/`workers`/`gzip` render `nginx.conf` at build time. The
-  renderer (`unix.nginx.conf`) is a pure function that ships with
+  renderer (`upkg.nginx.conf`) is a pure function that ships with
   the closure and runs inside the sandbox.
 - `auth` binds at run time. A `Secret` is a *reference* (env var
   or file), never a value: the generated `bin/serve` wrapper
@@ -328,7 +328,7 @@ does not name its output paths. The daemon computes them. So the
 frontend never implements Nix's store-path hashing.
 
 The frontend only computes two placeholder hashes. Both are verified
-against Nix 2.35 (see `unix.test.main`):
+against Nix 2.35 (see `upkg.test.main`):
 
 - Own output (`$out` in scripts):
   `nixbase32(sha256("nix-output:<outputname>"))`
@@ -343,8 +343,8 @@ Realisation is split into a pure planner and an effectful
 submitter, and the typechecker enforces the split:
 
 ```unison
-unix.plan   : unix.Pkg -> {Exception} unix.Plan       -- no IO ability
-unix.submit : unix.Plan -> {IO, Exception} Text
+upkg.plan   : upkg.Pkg -> {Exception} upkg.Plan       -- no IO ability
+upkg.submit : upkg.Plan -> {IO, Exception} Text
 ```
 
 `plan` computes the whole build graph — scripts, dependency edges,
@@ -354,7 +354,7 @@ kinds go through it (`planU` for Unison-built packages); closure
 serialization and code harvesting are IO and live in `submit`. That is Nix's pure-eval guarantee, but per definition and
 proved by the type system rather than by prohibiting effects in the
 whole language. Since the daemon computes all store paths, planned
-nodes reference each other symbolically (`unix.Ref`); `submit`
+nodes reference each other symbolically (`upkg.Ref`); `submit`
 folds the plan into the daemon, resolving references as drv paths
 become known and substituting `@depname@` tokens with upstream
 placeholders or literal paths.
@@ -371,7 +371,7 @@ bash.
 
 ## Layout
 
-- `src/unix.u` — the whole spike. Base32, placeholders, derivation
+- `src/upkg.u` — the whole spike. Base32, placeholders, derivation
   JSON, process handling, nixpkgs eval, graph realisation, a demo
   package set.
 - `src/nixpkgs-index.u` — generated pinned index of nixpkgs attrs.
@@ -379,7 +379,7 @@ bash.
 - `setup.md` — UCM transcript. It creates the codebase and installs
   `@unison/base` and `@unison/json`.
 - `run.sh` — bootstraps the codebase on first run, compiles
-  `unix.main` to bytecode (cached in `.ucm-compiled/`, invalidated
+  `upkg.main` to bytecode (cached in `.ucm-compiled/`, invalidated
   by a source hash), then runs it with `ucm run.compiled`. That
   skips the codebase open and the typecheck: `./run.sh shout` runs
   in ~1.7s instead of ~4s, and `test` in ~1s.
@@ -425,7 +425,7 @@ is needed.
 - One output (`out`) per local package. Multi-output needs more
   placeholder plumbing, not new ideas. Nixpkgs deps already carry
   their real output name.
-- The index only covers `unix.index.attrs`; other attrs fall back
+- The index only covers `upkg.index.attrs`; other attrs fall back
   to one `nix eval` each. The index records the local .drv path but
   not how to refetch it, so after a GC the fallback re-evals.
 - The build script DSL (`@dep@` substitution) is a placeholder for a

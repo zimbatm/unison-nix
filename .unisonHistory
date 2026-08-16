@@ -1,3 +1,17 @@
+compile upkg.Sh.runner .ucm-compiled/runner
+compile upkg.test.main .ucm-compiled/test
+compile upkg.main .ucm-compiled/upkg
+update
+load src/upkg.u
+project.rename upkg
+move.namespace upkgs upkg
+compile upkgs.Sh.runner .ucm-compiled/runner
+compile upkgs.test.main .ucm-compiled/test
+compile upkgs.main .ucm-compiled/upkgs
+update
+load src/upkgs.u
+project.rename upkgs
+move.namespace unix upkgs
 compile unix.Sh.runner .ucm-compiled/runner
 compile unix.test.main .ucm-compiled/test
 compile unix.main .ucm-compiled/unix
@@ -84,17 +98,3 @@ delete.term unix.UPkg.entry
 update
 load src/unix.u
 delete.term pkgs.uhello.script
-delete.term pkgs.uhello.main
-delete.term pkgs.ugreeting.script
-delete.term pkgs.ugreeting.main
-delete.term unix.compileEntry
-delete.term unix.UPkg.entry.modify
-delete.term unix.UPkg.entry.set
-delete.term unix.UPkg.entry
-update
-load src/unix.u
-branch.delete /update-main
-compile unix.Sh.runner .ucm-compiled/runner
-compile unix.test.main .ucm-compiled/test
-compile unix.main .ucm-compiled/unix
-update

@@ -1,4 +1,4 @@
--- unix: Unison as a frontend to Nix.
+-- upkg: Unison as a frontend to Nix.
 --
 -- Packages are plain Unison values. We compute Nix derivations as
 -- JSON, feed them to `nix derivation add`, and build the returned
@@ -15,11 +15,11 @@
 -- ----------------------------------------------------------------
 -- Nix base32. Not RFC 4648: custom alphabet, bits read in reverse.
 
-unix.base32.alphabet : [Char]
-unix.base32.alphabet = Text.toCharList "0123456789abcdfghijklmnpqrsvwxyz"
+upkg.base32.alphabet : [Char]
+upkg.base32.alphabet = Text.toCharList "0123456789abcdfghijklmnpqrsvwxyz"
 
-unix.base32.encode : Bytes -> Text
-unix.base32.encode bs =
+upkg.base32.encode : Bytes -> Text
+upkg.base32.encode bs =
   n = Bytes.size bs
   byte = j -> Optional.getOrElse 0 (Bytes.at j bs)
   len = Nat.diff (n * 8) 1 / 5 + 1
@@ -29,31 +29,31 @@ unix.base32.encode bs =
     bit = mod b 8
     hi = if j + 1 < n then Nat.shiftLeft (byte (j + 1)) (Nat.diff 8 bit) else 0
     c = Nat.and (Nat.or (Nat.shiftRight (byte j) bit) hi) 31
-    Optional.getOrElse ?0 (List.at c unix.base32.alphabet)
+    Optional.getOrElse ?0 (List.at c upkg.base32.alphabet)
   List.range 0 len
     |> List.map charFor
     |> List.reverse
     |> Text.fromCharList
 
-unix.sha256 : Text -> Bytes
-unix.sha256 t =
+upkg.sha256 : Text -> Bytes
+upkg.sha256 t =
   crypto.hashBytes crypto.HashAlgorithm.Sha2_256 (Text.toUtf8 t)
 
 -- Placeholder for one of our own outputs ($out in build scripts).
-unix.placeholder : Text -> Text
-unix.placeholder output =
-  "/" ++ unix.base32.encode (unix.sha256 ("nix-output:" ++ output))
+upkg.placeholder : Text -> Text
+upkg.placeholder output =
+  "/" ++ upkg.base32.encode (upkg.sha256 ("nix-output:" ++ output))
 
 -- Placeholder for the output of a dependency .drv. Nix rewrites it
 -- to the real store path once the dependency is built.
-unix.upstreamPlaceholder : Text -> Text -> Text
-unix.upstreamPlaceholder drvPath output =
+upkg.upstreamPlaceholder : Text -> Text -> Text
+upkg.upstreamPlaceholder drvPath output =
   hashPart = Text.take 32 (Text.drop 11 drvPath)
   base = Text.drop 44 drvPath
   drvName = Text.take (Nat.diff (Text.size base) 4) base
   refName = if output == "out" then drvName else drvName ++ "-" ++ output
-  "/" ++ unix.base32.encode
-    (unix.sha256 ("nix-upstream-output:" ++ hashPart ++ ":" ++ refName))
+  "/" ++ upkg.base32.encode
+    (upkg.sha256 ("nix-upstream-output:" ++ hashPart ++ ":" ++ refName))
 
 -- ----------------------------------------------------------------
 -- The package model. This is the whole "language": a package is a
@@ -68,19 +68,19 @@ unix.upstreamPlaceholder drvPath output =
 -- Fetch is name, url, SRI hash. It becomes a fixed-output
 -- derivation: the sandbox gets network, the daemon checks the hash.
 
-type unix.Dep = Local unix.Pkg | Nixpkgs Text | Fetch Text Text Text
+type upkg.Dep = Local upkg.Pkg | Nixpkgs Text | Fetch Text Text Text
 
-type unix.Pkg = { name : Text, script : Text, deps : [unix.Dep] }
+type upkg.Pkg = { name : Text, script : Text, deps : [upkg.Dep] }
 
-unix.system : Text
-unix.system = "x86_64-linux"
+upkg.system : Text
+upkg.system = "x86_64-linux"
 
 -- Output sections. Floating CA: the daemon computes the path.
 -- Fixed: we give the SRI hash of the file, the daemon derives the
 -- path from it.
 
-unix.caOutputs : Json
-unix.caOutputs =
+upkg.caOutputs : Json
+upkg.caOutputs =
   Json.object
     [ ( "out"
       , Json.object
@@ -90,8 +90,8 @@ unix.caOutputs =
       )
     ]
 
-unix.fixedOutputs : Text -> Json
-unix.fixedOutputs sri =
+upkg.fixedOutputs : Text -> Json
+upkg.fixedOutputs sri =
   Json.object
     [ ( "out"
       , Json.object [("hash", Json.text sri), ("method", Json.text "flat")]
@@ -100,11 +100,11 @@ unix.fixedOutputs sri =
 
 -- Group (drvPath, outputName) pairs by drvPath so the same .drv
 -- never appears twice in inputs.drvs.
-unix.groupDeps : [(Text, Text)] -> [(Text, [Text])]
-unix.groupDeps ps =
+upkg.groupDeps : [(Text, Text)] -> [(Text, [Text])]
+upkg.groupDeps ps =
   add = acc -> p -> match p with
     (drvPath, outName) ->
-      match unix.assoc.lookup drvPath acc with
+      match upkg.assoc.lookup drvPath acc with
         Some outs ->
           if List.any (o -> o Text.== outName) outs then acc
           else
@@ -119,8 +119,8 @@ unix.groupDeps ps =
 -- builder reads .attrs.sh instead. This prelude defines $out (and
 -- any future outputs) for the package script. Needs bash: .attrs.sh
 -- uses declare -A, which busybox sh cannot parse.
-unix.attrsPrelude : Text
-unix.attrsPrelude =
+upkg.attrsPrelude : Text
+upkg.attrsPrelude =
   Text.join
     "\n"
     [ ". \"$NIX_ATTRS_SH_FILE\""
@@ -134,8 +134,8 @@ unix.attrsPrelude =
 -- (drvPath, outputName) pairs. outEnv is $out as stored in env: a
 -- floating-CA placeholder, or "" for fixed outputs -- the daemon
 -- replaces "" with the computed path on `derivation add`.
-unix.drvJson' : Text -> Text -> Text -> [(Text, Text)] -> Text -> Json -> Text
-unix.drvJson' name builder script depDrvs outEnv outputsJson =
+upkg.drvJson' : Text -> Text -> Text -> [(Text, Text)] -> Text -> Json -> Text
+upkg.drvJson' name builder script depDrvs outEnv outputsJson =
   inputDrv = p -> match p with
     (drvPath, outNames) ->
       ( Text.drop 11 drvPath
@@ -148,14 +148,14 @@ unix.drvJson' name builder script depDrvs outEnv outputsJson =
     (Json.object
       [ ( "args"
         , Json.array
-            [Json.text "-c", Json.text (unix.attrsPrelude ++ script)]
+            [Json.text "-c", Json.text (upkg.attrsPrelude ++ script)]
         )
       , ("builder", Json.text builder)
       , ("env", Json.object [("out", Json.text outEnv)])
       , ( "inputs"
         , Json.object
             [ ( "drvs"
-              , Json.object (List.map inputDrv (unix.groupDeps depDrvs))
+              , Json.object (List.map inputDrv (upkg.groupDeps depDrvs))
               )
             , ("srcs", Json.array [])
             ]
@@ -167,23 +167,23 @@ unix.drvJson' name builder script depDrvs outEnv outputsJson =
             [ ("builder", Json.text builder)
             , ("name", Json.text name)
             , ("outputs", Json.array [Json.text "out"])
-            , ("system", Json.text unix.system)
+            , ("system", Json.text upkg.system)
             ]
         )
-      , ("system", Json.text unix.system)
+      , ("system", Json.text upkg.system)
       , ("version", Json.nat 4)
       ])
 
-unix.drvJson : Text -> Text -> Text -> [(Text, Text)] -> Text
-unix.drvJson name builder script depDrvs =
-  unix.drvJson' name builder script depDrvs (unix.placeholder "out")
-    unix.caOutputs
+upkg.drvJson : Text -> Text -> Text -> [(Text, Text)] -> Text
+upkg.drvJson name builder script depDrvs =
+  upkg.drvJson' name builder script depDrvs (upkg.placeholder "out")
+    upkg.caOutputs
 
 -- ----------------------------------------------------------------
 -- Talking to Nix.
 
-unix.exec : Text -> [Text] -> Text -> {IO, Exception} Text
-unix.exec cmd args input =
+upkg.exec : Text -> [Text] -> Text -> {IO, Exception} Text
+upkg.exec cmd args input =
   (stdin, stdout, stderr, proc) = IO.Process.start cmd args
   Handle.putText stdin input
   Handle.close stdin
@@ -199,27 +199,27 @@ unix.exec cmd args input =
             ++ Text.join " " args ++ "\n" ++ err)
           ())
 
-unix.nix : [Text] -> Text -> {IO, Exception} Text
-unix.nix args input =
-  unix.exec
+upkg.nix : [Text] -> Text -> {IO, Exception} Text
+upkg.nix args input =
+  upkg.exec
     "nix"
     (["--extra-experimental-features", "nix-command ca-derivations"] ++ args)
     input
 
-unix.chomp : Text -> Text
-unix.chomp = Text.replaceAll "\n" ""
+upkg.chomp : Text -> Text
+upkg.chomp = Text.replaceAll "\n" ""
 
-unix.addDrv : Text -> {IO, Exception} Text
-unix.addDrv j = unix.chomp (unix.nix ["derivation", "add"] j)
+upkg.addDrv : Text -> {IO, Exception} Text
+upkg.addDrv j = upkg.chomp (upkg.nix ["derivation", "add"] j)
 
 -- Ask the Nix evaluator for one nixpkgs attribute. One call returns
 -- drv path, output path, and output name. Forcing drvPath also
 -- writes the .drv into the store. The Nix language runs here, but
 -- only as an importer -- like `guix import`.
-unix.evalNixpkgs : Text -> {IO, Exception} (Text, Text, Text)
-unix.evalNixpkgs attr =
+upkg.evalNixpkgs : Text -> {IO, Exception} (Text, Text, Text)
+upkg.evalNixpkgs attr =
   out =
-    unix.nix
+    upkg.nix
       [ "eval", "--raw", "nixpkgs#" ++ attr
       , "--apply", "p: \"${p.drvPath}\\n${p.outPath}\\n${p.outputName}\""
       ]
@@ -237,17 +237,17 @@ unix.evalNixpkgs attr =
 -- pure lookup plus a file-exists check. The Nix evaluator only
 -- runs on an index miss, or when the .drv was garbage-collected.
 
-unix.index.lookup :
+upkg.index.lookup :
   Text -> [(Text, Text, Text, Text)] -> Optional (Text, Text, Text)
-unix.index.lookup attr xs = match xs with
+upkg.index.lookup attr xs = match xs with
   [] -> None
   (a, d, o, n) +: rest ->
     if a Text.== attr then Some (d, o, n)
-    else unix.index.lookup attr rest
+    else upkg.index.lookup attr rest
 
-unix.resolveNixpkgs : Text -> {IO, Exception} (Text, Text, Text)
-unix.resolveNixpkgs attr =
-  hit = match unix.index.lookup attr nixpkgs.index with
+upkg.resolveNixpkgs : Text -> {IO, Exception} (Text, Text, Text)
+upkg.resolveNixpkgs attr =
+  hit = match upkg.index.lookup attr nixpkgs.index with
     Some (d, o, n) ->
       if FilePath.exists (FilePath d) then Some (d, o, n) else None
     None -> None
@@ -255,30 +255,30 @@ unix.resolveNixpkgs attr =
     Some t -> t
     None ->
       printLine ("  eval " ++ attr ++ " (index miss)")
-      unix.evalNixpkgs attr
+      upkg.evalNixpkgs attr
 
 -- Attrs the demo package set needs. `./run.sh index` evaluates all
 -- of them in a single nix eval call.
-unix.index.attrs : [Text]
-unix.index.attrs =
+upkg.index.attrs : [Text]
+upkg.index.attrs =
   [ "bash", "cacert", "coreutils", "curl", "gawk", "gcc", "gettext"
   , "gnugrep", "gnumake", "gnused", "gnutar", "gzip", "hello"
   , "nginx", "unison-ucm"
   ]
 
-unix.index.generate : '{IO, Exception} ()
-unix.index.generate = do
-  meta = Json.fromText (unix.nix ["flake", "metadata", "nixpkgs", "--json"] "")
+upkg.index.generate : '{IO, Exception} ()
+upkg.index.generate = do
+  meta = Json.fromText (upkg.nix ["flake", "metadata", "nixpkgs", "--json"] "")
   rev =
-    unix.json.asText
-      (unix.json.get "narHash" (unix.json.get "locked" meta))
-  quoted = Text.join " " (List.map (a -> "\"" ++ a ++ "\"") unix.index.attrs)
+    upkg.json.asText
+      (upkg.json.get "narHash" (upkg.json.get "locked" meta))
+  quoted = Text.join " " (List.map (a -> "\"" ++ a ++ "\"") upkg.index.attrs)
   expr =
     "pkgs: builtins.concatStringsSep \"\\n\" (map (a: let p = pkgs.${a}; in \"${a}|${p.drvPath}|${p.outPath}|${p.outputName}\") [ "
       ++ quoted ++ " ])"
   out =
-    unix.nix
-      [ "eval", "--raw", "nixpkgs#legacyPackages." ++ unix.system
+    upkg.nix
+      [ "eval", "--raw", "nixpkgs#legacyPackages." ++ upkg.system
       , "--apply", expr
       ]
       ""
@@ -310,11 +310,11 @@ unix.index.generate = do
       ]
   writeFileUtf8 (FilePath "src/nixpkgs-index.u") txt
 
-unix.assoc.lookup : Text -> [(Text, a)] -> Optional a
-unix.assoc.lookup k xs = match xs with
+upkg.assoc.lookup : Text -> [(Text, a)] -> Optional a
+upkg.assoc.lookup k xs = match xs with
   [] -> None
   (k2, v) +: rest ->
-    if k == k2 then Some v else unix.assoc.lookup k rest
+    if k == k2 then Some v else upkg.assoc.lookup k rest
 
 -- ----------------------------------------------------------------
 -- Pure planning / effectful submission. `plan` computes the whole
@@ -326,29 +326,29 @@ unix.assoc.lookup k xs = match xs with
 
 -- A store reference in a plan: a path known at plan time (from the
 -- pinned index), or the drv path / output of a planned node.
-type unix.Ref = Path Text | Drv Text | Output Text
+type upkg.Ref = Path Text | Drv Text | Output Text
 
 -- A node's build action: a shell script with @token@ substitution,
 -- or a Unison closure. Carrying the closure in the plan is pure;
 -- serializing it and harvesting its code is IO and happens in
 -- submit.
-type unix.Action = Script Text | Closure ('{IO, Exception, unix.Sh} ())
+type upkg.Action = Script Text | Closure ('{IO, Exception, upkg.Sh} ())
 
-type unix.Node =
+type upkg.Node =
   { name : Text
   , builder : Text
-  , action : unix.Action
-  , subs : [(Text, unix.Ref)]        -- @token@ / dep name -> reference
-  , inputs : [(unix.Ref, Text)]      -- (drv ref, output name)
+  , action : upkg.Action
+  , subs : [(Text, upkg.Ref)]        -- @token@ / dep name -> reference
+  , inputs : [(upkg.Ref, Text)]      -- (drv ref, output name)
   , fixed : Optional Text            -- SRI hash => fixed-output
   }
 
-type unix.Plan = { nodes : [unix.Node] }  -- deps before dependents
+type upkg.Plan = { nodes : [upkg.Node] }  -- deps before dependents
 
 -- Pure index lookup. A miss is a plan-time error, not a fallback
 -- to the evaluator: purity means the oracle runs at pin time only.
-unix.index.get : Text -> {Exception} (Text, Text, Text)
-unix.index.get attr = match unix.index.lookup attr nixpkgs.index with
+upkg.index.get : Text -> {Exception} (Text, Text, Text)
+upkg.index.get attr = match upkg.index.lookup attr nixpkgs.index with
   Some t -> t
   None ->
     Exception.raise
@@ -356,32 +356,32 @@ unix.index.get attr = match unix.index.lookup attr nixpkgs.index with
         ("not in the pinned index (run ./run.sh index): " ++ attr)
         ())
 
-unix.plan : unix.Pkg -> {Exception} unix.Plan
-unix.plan pkg = unix.Plan.Plan (at1 (unix.plan.go ([], []) pkg))
+upkg.plan : upkg.Pkg -> {Exception} upkg.Plan
+upkg.plan pkg = upkg.Plan.Plan (at1 (upkg.plan.go ([], []) pkg))
 
-unix.plan.fetchNode :
-  ([unix.Node], [Text]) -> Text -> Text -> Text
-    -> {Exception} ([unix.Node], [Text])
-unix.plan.fetchNode acc fname url sri = match acc with
+upkg.plan.fetchNode :
+  ([upkg.Node], [Text]) -> Text -> Text -> Text
+    -> {Exception} ([upkg.Node], [Text])
+upkg.plan.fetchNode acc fname url sri = match acc with
   (nodes, seen) ->
     if List.any (n -> n Text.== fname) seen then acc
     else
-      (bashDrv, bashOut, bashOutName) = unix.index.get "bash"
-      (curlDrv, curlOut, curlOutName) = unix.index.get "curl"
-      (certDrv, certOut, certOutName) = unix.index.get "cacert"
+      (bashDrv, bashOut, bashOutName) = upkg.index.get "bash"
+      (curlDrv, curlOut, curlOutName) = upkg.index.get "curl"
+      (certDrv, certOut, certOutName) = upkg.index.get "cacert"
       script =
         "export SSL_CERT_FILE=" ++ certOut
           ++ "/etc/ssl/certs/ca-bundle.crt; " ++ curlOut
           ++ "/bin/curl --fail --location --output \"$out\" " ++ url
       node =
-        unix.Node.Node
+        upkg.Node.Node
           fname
           (bashOut ++ "/bin/bash")
-          (unix.Action.Script script)
+          (upkg.Action.Script script)
           []
-          [ (unix.Ref.Path bashDrv, bashOutName)
-          , (unix.Ref.Path curlDrv, curlOutName)
-          , (unix.Ref.Path certDrv, certOutName)
+          [ (upkg.Ref.Path bashDrv, bashOutName)
+          , (upkg.Ref.Path curlDrv, curlOutName)
+          , (upkg.Ref.Path certDrv, certOutName)
           ]
           (Some sri)
       (nodes :+ node, seen :+ fname)
@@ -389,98 +389,98 @@ unix.plan.fetchNode acc fname url sri = match acc with
 -- Resolve a dep list purely: emit nodes for local/fetch deps,
 -- symbolic subs and input refs for all of them. Shared by the Pkg
 -- and UPkg planners.
-unix.plan.deps :
-  ([unix.Node], [Text]) -> [unix.Dep]
+upkg.plan.deps :
+  ([upkg.Node], [Text]) -> [upkg.Dep]
     -> {Exception}
-        ([unix.Node], [Text], [(Text, unix.Ref)], [(unix.Ref, Text)])
-unix.plan.deps acc deps = match acc with
+        ([upkg.Node], [Text], [(Text, upkg.Ref)], [(upkg.Ref, Text)])
+upkg.plan.deps acc deps = match acc with
   (nodes, seen) ->
     step = a -> dep -> match a with
       (ns, sn, subs, ins) -> match dep with
-        unix.Dep.Local p ->
-          (ns2, sn2) = unix.plan.go (ns, sn) p
-          pn = unix.Pkg.name p
+        upkg.Dep.Local p ->
+          (ns2, sn2) = upkg.plan.go (ns, sn) p
+          pn = upkg.Pkg.name p
           ( ns2, sn2
-          , subs :+ (pn, unix.Ref.Output pn)
-          , ins :+ (unix.Ref.Drv pn, "out")
+          , subs :+ (pn, upkg.Ref.Output pn)
+          , ins :+ (upkg.Ref.Drv pn, "out")
           )
-        unix.Dep.Nixpkgs attr ->
-          (dp, op, on) = unix.index.get attr
+        upkg.Dep.Nixpkgs attr ->
+          (dp, op, on) = upkg.index.get attr
           ( ns, sn
-          , subs :+ (attr, unix.Ref.Path op)
-          , ins :+ (unix.Ref.Path dp, on)
+          , subs :+ (attr, upkg.Ref.Path op)
+          , ins :+ (upkg.Ref.Path dp, on)
           )
-        unix.Dep.Fetch fname url sri ->
-          (ns2, sn2) = unix.plan.fetchNode (ns, sn) fname url sri
+        upkg.Dep.Fetch fname url sri ->
+          (ns2, sn2) = upkg.plan.fetchNode (ns, sn) fname url sri
           ( ns2, sn2
-          , subs :+ (fname, unix.Ref.Output fname)
-          , ins :+ (unix.Ref.Drv fname, "out")
+          , subs :+ (fname, upkg.Ref.Output fname)
+          , ins :+ (upkg.Ref.Drv fname, "out")
           )
     List.foldLeft step (nodes, seen, [], []) deps
 
-unix.plan.go :
-  ([unix.Node], [Text]) -> unix.Pkg -> {Exception} ([unix.Node], [Text])
-unix.plan.go acc pkg = match pkg with
-  unix.Pkg.Pkg name script deps -> match acc with
+upkg.plan.go :
+  ([upkg.Node], [Text]) -> upkg.Pkg -> {Exception} ([upkg.Node], [Text])
+upkg.plan.go acc pkg = match pkg with
+  upkg.Pkg.Pkg name script deps -> match acc with
     (nodes, seen) ->
       if List.any (n -> n Text.== name) seen then acc
       else
         (nodes2, seen2, subs, ins) =
-          unix.plan.deps (nodes, seen :+ name) deps
-        (bashDrv, bashOut, bashOutName) = unix.index.get "bash"
+          upkg.plan.deps (nodes, seen :+ name) deps
+        (bashDrv, bashOut, bashOutName) = upkg.index.get "bash"
         node =
-          unix.Node.Node
+          upkg.Node.Node
             name
             (bashOut ++ "/bin/bash")
-            (unix.Action.Script script)
+            (upkg.Action.Script script)
             subs
-            (ins :+ (unix.Ref.Path bashDrv, bashOutName))
+            (ins :+ (upkg.Ref.Path bashDrv, bashOutName))
             None
         (nodes2 :+ node, seen2)
 
 -- Plan a Unison-built package: same dep resolution, ucm as the
 -- builder, the build closure carried as a value.
-unix.planU : unix.UPkg -> {Exception} unix.Plan
-unix.planU up = match up with
-  unix.UPkg.UPkg name build deps ->
-    (nodes, _, subs, ins) = unix.plan.deps ([], []) deps
-    (ucmDrv, ucmOut, ucmOutName) = unix.index.get "unison-ucm"
+upkg.planU : upkg.UPkg -> {Exception} upkg.Plan
+upkg.planU up = match up with
+  upkg.UPkg.UPkg name build deps ->
+    (nodes, _, subs, ins) = upkg.plan.deps ([], []) deps
+    (ucmDrv, ucmOut, ucmOutName) = upkg.index.get "unison-ucm"
     node =
-      unix.Node.Node
+      upkg.Node.Node
         name
         (ucmOut ++ "/bin/ucm")
-        (unix.Action.Closure build)
+        (upkg.Action.Closure build)
         subs
-        (ins :+ (unix.Ref.Path ucmDrv, ucmOutName))
+        (ins :+ (upkg.Ref.Path ucmDrv, ucmOutName))
         None
-    unix.Plan.Plan (nodes :+ node)
+    upkg.Plan.Plan (nodes :+ node)
 
 -- Fold the plan into the daemon: add each drv, learn its path,
 -- resolve downstream references. Returns the root drv path.
-unix.submit : unix.Plan -> {IO, Exception} Text
-unix.submit p = match p with
-  unix.Plan.Plan nodes ->
-    look = acc -> n -> match unix.assoc.lookup n acc with
+upkg.submit : upkg.Plan -> {IO, Exception} Text
+upkg.submit p = match p with
+  upkg.Plan.Plan nodes ->
+    look = acc -> n -> match upkg.assoc.lookup n acc with
       Some pr -> pr
       None ->
         Exception.raise
           (Generic.failure ("plan out of order: " ++ n) ())
     step = acc -> node -> match node with
-      unix.Node.Node name builder action subs ins fixed ->
+      upkg.Node.Node name builder action subs ins fixed ->
         resolveDrv = r -> match r with
-          unix.Ref.Path t -> t
-          unix.Ref.Drv n -> at1 (look acc n)
-          unix.Ref.Output n -> at1 (look acc n)
+          upkg.Ref.Path t -> t
+          upkg.Ref.Drv n -> at1 (look acc n)
+          upkg.Ref.Output n -> at1 (look acc n)
         resolveOut = r -> match r with
-          unix.Ref.Path t -> t
-          unix.Ref.Drv n -> at1 (look acc n)
-          unix.Ref.Output n -> at2 (look acc n)
+          upkg.Ref.Path t -> t
+          upkg.Ref.Drv n -> at1 (look acc n)
+          upkg.Ref.Output n -> at2 (look acc n)
         depDrvs =
           List.map
             (pr -> match pr with (ref, on) -> (resolveDrv ref, on))
             ins
         drvPath = match action with
-          unix.Action.Script script ->
+          upkg.Action.Script script ->
             script' =
               List.foldLeft
                 (s -> pr -> match pr with
@@ -489,21 +489,21 @@ unix.submit p = match p with
                 script
                 subs
             (outEnv, outsJson) = match fixed with
-              Some sri -> ("", unix.fixedOutputs sri)
-              None -> (unix.placeholder "out", unix.caOutputs)
-            unix.addDrv
-              (unix.drvJson' name builder script' depDrvs outEnv outsJson)
-          unix.Action.Closure build ->
+              Some sri -> ("", upkg.fixedOutputs sri)
+              None -> (upkg.placeholder "out", upkg.caOutputs)
+            upkg.addDrv
+              (upkg.drvJson' name builder script' depDrvs outEnv outsJson)
+          upkg.Action.Closure build ->
             runnerPath =
-              unix.chomp
-                (unix.nix
+              upkg.chomp
+                (upkg.nix
                   ["store", "add", "--mode", "flat", ".ucm-compiled/runner.uc"]
                   "")
             scriptFile = ".ucm-compiled/script-" ++ name ++ ".uv"
-            writeFile (FilePath scriptFile) (unix.ship build)
+            writeFile (FilePath scriptFile) (upkg.ship build)
             uvPath =
-              unix.chomp
-                (unix.nix ["store", "add", "--mode", "flat", scriptFile] "")
+              upkg.chomp
+                (upkg.nix ["store", "add", "--mode", "flat", scriptFile] "")
             pathEnv =
               Text.join
                 ":"
@@ -516,9 +516,9 @@ unix.submit p = match p with
                   (n, ref) -> ("dep_" ++ n, resolveOut ref))
                 subs
             envs =
-              [("PATH", pathEnv), ("out", unix.placeholder "out")] ++ depEnvs
-            unix.addDrv
-              (unix.drvJsonU
+              [("PATH", pathEnv), ("out", upkg.placeholder "out")] ++ depEnvs
+            upkg.addDrv
+              (upkg.drvJsonU
                 name
                 builder
                 ["run.compiled", runnerPath, uvPath]
@@ -527,9 +527,9 @@ unix.submit p = match p with
                 [runnerPath, uvPath])
         outText = match fixed with
           Some _ ->
-            unix.chomp
-              (unix.exec "nix-store" ["--query", "--outputs", drvPath] "")
-          None -> unix.upstreamPlaceholder drvPath "out"
+            upkg.chomp
+              (upkg.exec "nix-store" ["--query", "--outputs", drvPath] "")
+          None -> upkg.upstreamPlaceholder drvPath "out"
         printLine ("  drv " ++ name ++ " -> " ++ drvPath)
         acc :+ (name, (drvPath, outText))
     final = List.foldLeft step [] nodes
@@ -537,8 +537,8 @@ unix.submit p = match p with
       Some pr -> at1 (at2 pr)
       None -> Exception.raise (Generic.failure "empty plan" ())
 
-unix.realise : unix.Pkg -> {IO, Exception} Text
-unix.realise pkg = unix.submit (unix.plan pkg)
+upkg.realise : upkg.Pkg -> {IO, Exception} Text
+upkg.realise pkg = upkg.submit (upkg.plan pkg)
 
 -- ----------------------------------------------------------------
 -- Typed derivations. `nix derivation show` emits the same schema
@@ -550,9 +550,9 @@ unix.realise pkg = unix.submit (unix.plan pkg)
 -- An output is input-addressed (basename of the store path, fixed
 -- at eval time), floating CA (daemon computes the path), or fixed
 -- (SRI hash + method).
-type unix.Out = Addressed Text | Floating | Fixed Text Text
+type upkg.Out = Addressed Text | Floating | Fixed Text Text
 
-type unix.Drv =
+type upkg.Drv =
   { name : Text
   , system : Text
   , builder : Text
@@ -560,53 +560,53 @@ type unix.Drv =
   , env : [(Text, Text)]
   , inputDrvs : [(Text, [Text])]
   , inputSrcs : [Text]
-  , outputs : [(Text, unix.Out)]
+  , outputs : [(Text, upkg.Out)]
   , attrs : Optional Json
   }
 
 -- Small Json access kit. The lib exposes the constructors, so this
 -- is all we need instead of a decoder framework.
 
-unix.json.get : Text -> Json -> {Exception} Json
-unix.json.get k j = match j with
-  Json.Object kvs -> match unix.assoc.lookup k kvs with
+upkg.json.get : Text -> Json -> {Exception} Json
+upkg.json.get k j = match j with
+  Json.Object kvs -> match upkg.assoc.lookup k kvs with
     Some v -> v
     None -> Exception.raise (Generic.failure ("json: missing key " ++ k) ())
   _ -> Exception.raise (Generic.failure ("json: not an object at " ++ k) ())
 
-unix.json.opt : Text -> Json -> Optional Json
-unix.json.opt k j = match j with
-  Json.Object kvs -> unix.assoc.lookup k kvs
+upkg.json.opt : Text -> Json -> Optional Json
+upkg.json.opt k j = match j with
+  Json.Object kvs -> upkg.assoc.lookup k kvs
   _ -> None
 
-unix.json.asText : Json -> {Exception} Text
-unix.json.asText j = match j with
+upkg.json.asText : Json -> {Exception} Text
+upkg.json.asText j = match j with
   Json.Text t -> t
   _ -> Exception.raise (Generic.failure "json: not a string" ())
 
-unix.json.asArray : Json -> {Exception} [Json]
-unix.json.asArray j = match j with
+upkg.json.asArray : Json -> {Exception} [Json]
+upkg.json.asArray j = match j with
   Json.Array xs -> xs
   _ -> Exception.raise (Generic.failure "json: not an array" ())
 
-unix.json.asObject : Json -> {Exception} [(Text, Json)]
-unix.json.asObject j = match j with
+upkg.json.asObject : Json -> {Exception} [(Text, Json)]
+upkg.json.asObject j = match j with
   Json.Object kvs -> kvs
   _ -> Exception.raise (Generic.failure "json: not an object" ())
 
 -- Rewrite every string leaf. Keys stay as they are.
-unix.json.mapText : (Text -> Text) -> Json -> Json
-unix.json.mapText f j = match j with
+upkg.json.mapText : (Text -> Text) -> Json -> Json
+upkg.json.mapText f j = match j with
   Json.Text t -> Json.Text (f t)
-  Json.Array xs -> Json.Array (List.map (unix.json.mapText f) xs)
+  Json.Array xs -> Json.Array (List.map (upkg.json.mapText f) xs)
   Json.Object kvs ->
     Json.Object
-      (List.map (p -> match p with (k, v) -> (k, unix.json.mapText f v)) kvs)
+      (List.map (p -> match p with (k, v) -> (k, upkg.json.mapText f v)) kvs)
   _ -> j
 
 -- Upsert a key in a Json object. Non-objects pass through.
-unix.json.set : Text -> Json -> Json -> Json
-unix.json.set k v j = match j with
+upkg.json.set : Text -> Json -> Json -> Json
+upkg.json.set k v j = match j with
   Json.Object kvs ->
     if List.any (p -> at1 p Text.== k) kvs
     then
@@ -618,43 +618,43 @@ unix.json.set k v j = match j with
     else Json.Object (kvs :+ (k, v))
   _ -> j
 
-unix.Drv.fromJson : Json -> {Exception} unix.Drv
-unix.Drv.fromJson j =
-  texts = xs -> List.map unix.json.asText (unix.json.asArray xs)
-  pairText = p -> match p with (k, v) -> (k, unix.json.asText v)
-  out = o -> match unix.json.opt "path" o with
-    Some p -> unix.Out.Addressed (unix.json.asText p)
-    None -> match unix.json.opt "hash" o with
+upkg.Drv.fromJson : Json -> {Exception} upkg.Drv
+upkg.Drv.fromJson j =
+  texts = xs -> List.map upkg.json.asText (upkg.json.asArray xs)
+  pairText = p -> match p with (k, v) -> (k, upkg.json.asText v)
+  out = o -> match upkg.json.opt "path" o with
+    Some p -> upkg.Out.Addressed (upkg.json.asText p)
+    None -> match upkg.json.opt "hash" o with
       Some h ->
-        unix.Out.Fixed
-          (unix.json.asText h)
-          (unix.json.asText (unix.json.get "method" o))
-      None -> unix.Out.Floating
-  inputs = unix.json.get "inputs" j
+        upkg.Out.Fixed
+          (upkg.json.asText h)
+          (upkg.json.asText (upkg.json.get "method" o))
+      None -> upkg.Out.Floating
+  inputs = upkg.json.get "inputs" j
   drvIn = p -> match p with
-    (k, v) -> (k, texts (unix.json.get "outputs" v))
-  unix.Drv.Drv
-    (unix.json.asText (unix.json.get "name" j))
-    (unix.json.asText (unix.json.get "system" j))
-    (unix.json.asText (unix.json.get "builder" j))
-    (texts (unix.json.get "args" j))
-    (List.map pairText (unix.json.asObject (unix.json.get "env" j)))
-    (List.map drvIn (unix.json.asObject (unix.json.get "drvs" inputs)))
-    (texts (unix.json.get "srcs" inputs))
+    (k, v) -> (k, texts (upkg.json.get "outputs" v))
+  upkg.Drv.Drv
+    (upkg.json.asText (upkg.json.get "name" j))
+    (upkg.json.asText (upkg.json.get "system" j))
+    (upkg.json.asText (upkg.json.get "builder" j))
+    (texts (upkg.json.get "args" j))
+    (List.map pairText (upkg.json.asObject (upkg.json.get "env" j)))
+    (List.map drvIn (upkg.json.asObject (upkg.json.get "drvs" inputs)))
+    (texts (upkg.json.get "srcs" inputs))
     (List.map
       (p -> match p with (k, v) -> (k, out v))
-      (unix.json.asObject (unix.json.get "outputs" j)))
-    (unix.json.opt "structuredAttrs" j)
+      (upkg.json.asObject (upkg.json.get "outputs" j)))
+    (upkg.json.opt "structuredAttrs" j)
 
-unix.Drv.toJson : unix.Drv -> Json
-unix.Drv.toJson d = match d with
-  unix.Drv.Drv name system builder args env inDrvs inSrcs outputs attrs ->
+upkg.Drv.toJson : upkg.Drv -> Json
+upkg.Drv.toJson d = match d with
+  upkg.Drv.Drv name system builder args env inDrvs inSrcs outputs attrs ->
     outJson = o -> match o with
-      unix.Out.Addressed p -> Json.object [("path", Json.text p)]
-      unix.Out.Floating ->
+      upkg.Out.Addressed p -> Json.object [("path", Json.text p)]
+      upkg.Out.Floating ->
         Json.object
           [("hashAlgo", Json.text "sha256"), ("method", Json.text "nar")]
-      unix.Out.Fixed h m ->
+      upkg.Out.Fixed h m ->
         Json.object [("hash", Json.text h), ("method", Json.text m)]
     inDrv = p -> match p with
       (k, outs) ->
@@ -692,34 +692,34 @@ unix.Drv.toJson d = match d with
 -- computes fresh paths at build time. This is what makes a mutated
 -- nixpkgs derivation buildable: its identity changed, so its old
 -- output paths are lies, and CA sidesteps recomputing them.
-unix.Drv.caify : unix.Drv -> unix.Drv
-unix.Drv.caify d =
+upkg.Drv.caify : upkg.Drv -> upkg.Drv
+upkg.Drv.caify d =
   subs =
     List.foldLeft
       (acc -> p -> match p with
-        (oname, unix.Out.Addressed path) ->
-          acc :+ ("/nix/store/" ++ path, unix.placeholder oname)
+        (oname, upkg.Out.Addressed path) ->
+          acc :+ ("/nix/store/" ++ path, upkg.placeholder oname)
         _ -> acc)
       []
-      (unix.Drv.outputs d)
+      (upkg.Drv.outputs d)
   swap = t -> let
     List.foldLeft
       (s -> pr -> match pr with (old, new) -> Text.replaceAll old new s)
       t
       subs
   d
-    |> unix.Drv.env.modify
+    |> upkg.Drv.env.modify
          (List.map (p -> match p with (k, v) -> (k, swap v)))
-    |> unix.Drv.args.modify (List.map swap)
-    |> unix.Drv.attrs.modify (Optional.map (unix.json.mapText swap))
-    |> unix.Drv.outputs.modify
+    |> upkg.Drv.args.modify (List.map swap)
+    |> upkg.Drv.attrs.modify (Optional.map (upkg.json.mapText swap))
+    |> upkg.Drv.outputs.modify
          (List.map
            (p -> match p with
-             (k, unix.Out.Fixed h m) -> (k, unix.Out.Fixed h m)
-             (k, _) -> (k, unix.Out.Floating)))
+             (k, upkg.Out.Fixed h m) -> (k, upkg.Out.Fixed h m)
+             (k, _) -> (k, upkg.Out.Floating)))
 
-unix.Drv.setEnv : Text -> Text -> unix.Drv -> unix.Drv
-unix.Drv.setEnv k v d =
+upkg.Drv.setEnv : Text -> Text -> upkg.Drv -> upkg.Drv
+upkg.Drv.setEnv k v d =
   upsert = kvs -> let
     if List.any (p -> at1 p Text.== k) kvs
     then
@@ -728,29 +728,29 @@ unix.Drv.setEnv k v d =
           (k2, v2) -> if k2 Text.== k then (k2, v) else (k2, v2))
         kvs
     else kvs :+ (k, v)
-  unix.Drv.env.modify upsert d
+  upkg.Drv.env.modify upsert d
 
-unix.Drv.setAttr : Text -> Json -> unix.Drv -> unix.Drv
-unix.Drv.setAttr k v d =
-  unix.Drv.attrs.modify (Optional.map (unix.json.set k v)) d
+upkg.Drv.setAttr : Text -> Json -> upkg.Drv -> upkg.Drv
+upkg.Drv.setAttr k v d =
+  upkg.Drv.attrs.modify (Optional.map (upkg.json.set k v)) d
 
-unix.Drv.rename : Text -> unix.Drv -> unix.Drv
-unix.Drv.rename n d =
-  d |> unix.Drv.name.set n |> unix.Drv.setAttr "name" (Json.text n)
+upkg.Drv.rename : Text -> upkg.Drv -> upkg.Drv
+upkg.Drv.rename n d =
+  d |> upkg.Drv.name.set n |> upkg.Drv.setAttr "name" (Json.text n)
 
 -- Import one nixpkgs derivation as a typed value.
-unix.importDrv : Text -> {IO, Exception} unix.Drv
-unix.importDrv attr =
-  raw = unix.nix ["derivation", "show", "nixpkgs#" ++ attr] ""
+upkg.importDrv : Text -> {IO, Exception} upkg.Drv
+upkg.importDrv attr =
+  raw = upkg.nix ["derivation", "show", "nixpkgs#" ++ attr] ""
   j = Json.fromText raw
-  match unix.json.asObject (unix.json.get "derivations" j) with
-    [(_, dj)] -> unix.Drv.fromJson dj
+  match upkg.json.asObject (upkg.json.get "derivations" j) with
+    [(_, dj)] -> upkg.Drv.fromJson dj
     _ ->
       Exception.raise
         (Generic.failure ("expected one derivation: " ++ attr) ())
 
-unix.Drv.realise : unix.Drv -> {IO, Exception} Text
-unix.Drv.realise d = unix.addDrv (Json.toText (unix.Drv.toJson d))
+upkg.Drv.realise : upkg.Drv -> {IO, Exception} Text
+upkg.Drv.realise d = upkg.addDrv (Json.toText (upkg.Drv.toJson d))
 
 -- ----------------------------------------------------------------
 -- Deep overrides: import a whole drv closure, override any node,
@@ -761,41 +761,41 @@ unix.Drv.realise d = unix.addDrv (Json.toText (unix.Drv.toJson d))
 -- still serves them.
 
 -- Closure keyed by drv basename, from `nix derivation show -r`.
-unix.importClosure : Text -> {IO, Exception} [(Text, unix.Drv)]
-unix.importClosure drvPath =
-  raw = unix.nix ["derivation", "show", "-r", drvPath] ""
+upkg.importClosure : Text -> {IO, Exception} [(Text, upkg.Drv)]
+upkg.importClosure drvPath =
+  raw = upkg.nix ["derivation", "show", "-r", drvPath] ""
   j = Json.fromText raw
-  ds = unix.json.asObject (unix.json.get "derivations" j)
-  List.map (p -> match p with (b, dj) -> (b, unix.Drv.fromJson dj)) ds
+  ds = upkg.json.asObject (upkg.json.get "derivations" j)
+  List.map (p -> match p with (b, dj) -> (b, upkg.Drv.fromJson dj)) ds
 
 -- Does node b transitively depend on a target? Memoized; nodes
 -- outside the closure map count as unaffected.
-unix.closure.mark :
-  [(Text, unix.Drv)] -> (Text -> Boolean) -> [(Text, Boolean)] -> Text
+upkg.closure.mark :
+  [(Text, upkg.Drv)] -> (Text -> Boolean) -> [(Text, Boolean)] -> Text
     -> ([(Text, Boolean)], Boolean)
-unix.closure.mark closure isTarget cache b =
-  match unix.assoc.lookup b cache with
+upkg.closure.mark closure isTarget cache b =
+  match upkg.assoc.lookup b cache with
     Some r -> (cache, r)
     None ->
       if isTarget b then (cache :+ (b, true), true)
-      else match unix.assoc.lookup b closure with
+      else match upkg.assoc.lookup b closure with
         None -> (cache :+ (b, false), false)
         Some d ->
           step = acc -> p -> match acc with
             (c, hit) -> match p with
               (i, _) ->
-                (c2, r) = unix.closure.mark closure isTarget c i
+                (c2, r) = upkg.closure.mark closure isTarget c i
                 (c2, hit || r)
           (cache2, hit) =
-            List.foldLeft step (cache, false) (unix.Drv.inputDrvs d)
+            List.foldLeft step (cache, false) (upkg.Drv.inputDrvs d)
           (cache2 :+ (b, hit), hit)
 
-unix.closure.markAll :
-  [(Text, unix.Drv)] -> [Text] -> [(Text, Boolean)]
-unix.closure.markAll closure targets =
+upkg.closure.markAll :
+  [(Text, upkg.Drv)] -> [Text] -> [(Text, Boolean)]
+upkg.closure.markAll closure targets =
   isT = b -> List.any (t -> t Text.== b) targets
   List.foldLeft
-    (c -> p -> at1 (unix.closure.mark closure isT c (at1 p)))
+    (c -> p -> at1 (upkg.closure.mark closure isT c (at1 p)))
     []
     closure
 
@@ -804,18 +804,18 @@ unix.closure.markAll closure targets =
 -- literal output paths, the user override if it is a target, and
 -- CA-ification. Returns the new drv path; the cache maps old
 -- basename -> new drv path.
-unix.closure.rewrite :
-  [(Text, unix.Drv)] -> [(Text, Boolean)] -> [Text]
-    -> (unix.Drv -> unix.Drv) -> [(Text, Text)] -> Text
+upkg.closure.rewrite :
+  [(Text, upkg.Drv)] -> [(Text, Boolean)] -> [Text]
+    -> (upkg.Drv -> upkg.Drv) -> [(Text, Text)] -> Text
     -> {IO, Exception} ([(Text, Text)], Text)
-unix.closure.rewrite closure marks targets f cache b =
-  affected = k -> Optional.getOrElse false (unix.assoc.lookup k marks)
-  match unix.assoc.lookup b cache with
+upkg.closure.rewrite closure marks targets f cache b =
+  affected = k -> Optional.getOrElse false (upkg.assoc.lookup k marks)
+  match upkg.assoc.lookup b cache with
     Some p -> (cache, p)
     None ->
       if Boolean.not (affected b) then (cache, "/nix/store/" ++ b)
       else
-        d = match unix.assoc.lookup b closure with
+        d = match upkg.assoc.lookup b closure with
           Some d -> d
           None ->
             Exception.raise
@@ -826,23 +826,23 @@ unix.closure.rewrite closure marks targets f cache b =
               if Boolean.not (affected i) then (c, ins :+ (i, outs), subs)
               else
                 (c2, newPath) =
-                  unix.closure.rewrite closure marks targets f c i
-                iDrv = match unix.assoc.lookup i closure with
+                  upkg.closure.rewrite closure marks targets f c i
+                iDrv = match upkg.assoc.lookup i closure with
                   Some x -> x
                   None ->
                     Exception.raise
                       (Generic.failure ("not in closure: " ++ i) ())
                 subFor = ss -> op -> match op with
-                  (oname, unix.Out.Addressed pth) ->
+                  (oname, upkg.Out.Addressed pth) ->
                     ss
                       :+ ( "/nix/store/" ++ pth
-                         , unix.upstreamPlaceholder newPath oname
+                         , upkg.upstreamPlaceholder newPath oname
                          )
                   _ -> ss
-                subs2 = List.foldLeft subFor subs (unix.Drv.outputs iDrv)
+                subs2 = List.foldLeft subFor subs (upkg.Drv.outputs iDrv)
                 (c2, ins :+ (Text.drop 11 newPath, outs), subs2)
         (cache2, newIns, subs) =
-          List.foldLeft step (cache, [], []) (unix.Drv.inputDrvs d)
+          List.foldLeft step (cache, [], []) (upkg.Drv.inputDrvs d)
         swap = t -> let
           List.foldLeft
             (s -> pr -> match pr with (o, n) -> Text.replaceAll o n s)
@@ -850,15 +850,15 @@ unix.closure.rewrite closure marks targets f cache b =
             subs
         d1 =
           d
-            |> unix.Drv.inputDrvs.set newIns
-            |> unix.Drv.env.modify
+            |> upkg.Drv.inputDrvs.set newIns
+            |> upkg.Drv.env.modify
                  (List.map (p -> match p with (k, v) -> (k, swap v)))
-            |> unix.Drv.args.modify (List.map swap)
-            |> unix.Drv.attrs.modify
-                 (Optional.map (unix.json.mapText swap))
+            |> upkg.Drv.args.modify (List.map swap)
+            |> upkg.Drv.attrs.modify
+                 (Optional.map (upkg.json.mapText swap))
         d2 = if List.any (t -> t Text.== b) targets then f d1 else d1
-        newPath = unix.Drv.realise (unix.Drv.caify d2)
-        printLine ("  rewrite " ++ unix.Drv.name d ++ " -> " ++ newPath)
+        newPath = upkg.Drv.realise (upkg.Drv.caify d2)
+        printLine ("  rewrite " ++ upkg.Drv.name d ++ " -> " ++ newPath)
         (cache2 :+ (b, newPath), newPath)
 
 -- ----------------------------------------------------------------
@@ -874,17 +874,17 @@ unix.closure.rewrite closure marks targets f cache b =
 -- environment anyway. The daemon rewrites the placeholders in env
 -- like everywhere else.
 
-ability unix.Sh where
+ability upkg.Sh where
   run : Text -> [Text] -> ()
   cd : Text -> ()
   out : Text
   dep : Text -> Text
 
-unix.Sh.build : '{IO, Exception, unix.Sh} a -> {IO, Exception} a
-unix.Sh.build prog =
+upkg.Sh.build : '{IO, Exception, upkg.Sh} a -> {IO, Exception} a
+upkg.Sh.build prog =
   h = cases
     { r } -> r
-    { unix.Sh.run cmd args -> k } ->
+    { upkg.Sh.run cmd args -> k } ->
       printLine ("$ " ++ cmd ++ " " ++ Text.join " " args)
       code = IO.Process.call cmd args
       match code with
@@ -894,11 +894,11 @@ unix.Sh.build prog =
             (Generic.failure
               (cmd ++ " failed with exit code " ++ Nat.toText code)
               ())
-    { unix.Sh.cd p -> k } ->
+    { upkg.Sh.cd p -> k } ->
       FilePath.setCurrentDirectory (FilePath p)
       handle k () with h
-    { unix.Sh.out -> k } -> handle k (IO.getEnv "out") with h
-    { unix.Sh.dep n -> k } -> handle k (IO.getEnv ("dep_" ++ n)) with h
+    { upkg.Sh.out -> k } -> handle k (IO.getEnv "out") with h
+    { upkg.Sh.dep n -> k } -> handle k (IO.getEnv ("dep_" ++ n)) with h
   handle !prog with h
 
 -- A package built by Unison. The build script is a first-class
@@ -906,44 +906,44 @@ unix.Sh.build prog =
 -- sandbox the way distributed Unison ships closures to remote
 -- nodes -- Value.serialize for the value, Code.serialize for the
 -- transitive code of its dependencies. One generic runner (see
--- unix.Sh.runner) is compiled to bytecode once; it caches the
+-- upkg.Sh.runner) is compiled to bytecode once; it caches the
 -- shipped code and loads the value.
-type unix.UPkg =
+type upkg.UPkg =
   { name : Text
-  , build : '{IO, Exception, unix.Sh} ()
-  , deps : [unix.Dep]
+  , build : '{IO, Exception, upkg.Sh} ()
+  , deps : [upkg.Dep]
   }
 
 -- Transitive non-builtin code of a set of links. Builtins exist on
 -- both sides and their code cannot serialize, so they are skipped.
-unix.codeOf :
+upkg.codeOf :
   [Link.Term] -> [(Link.Term, Code)] -> {IO, Exception} [(Link.Term, Code)]
-unix.codeOf pending acc = match pending with
+upkg.codeOf pending acc = match pending with
   [] -> acc
   link +: rest ->
-    if List.any (p -> at1 p === link) acc then unix.codeOf rest acc
+    if List.any (p -> at1 p === link) acc then upkg.codeOf rest acc
     else if Text.startsWith "##" (Link.Term.toText link) then
-      unix.codeOf rest acc
+      upkg.codeOf rest acc
     else match Code.lookup link with
-      None -> unix.codeOf rest acc
+      None -> upkg.codeOf rest acc
       Some code ->
-        unix.codeOf (rest ++ Code.dependencies code) (acc :+ (link, code))
+        upkg.codeOf (rest ++ Code.dependencies code) (acc :+ (link, code))
 
 -- Pack a value and the code it needs into one Bytes. The outer
 -- envelope is plain data, so it loads anywhere.
-unix.ship : a -> {IO, Exception} Bytes
-unix.ship v =
+upkg.ship : a -> {IO, Exception} Bytes
+upkg.ship v =
   val = Value.value v
   bytes = Value.serialize_v4 val
   pairs =
     List.map
       (p -> match p with
         (l, c) -> (Value.serialize_v4 (Value.value l), Code.serialize_v3 c))
-      (unix.codeOf (Value.dependencies val) [])
+      (upkg.codeOf (Value.dependencies val) [])
   Value.serialize_v4 (Value.value (bytes, pairs))
 
-unix.unship : Bytes -> {IO, Exception} a
-unix.unship b =
+upkg.unship : Bytes -> {IO, Exception} a
+upkg.unship b =
   bad = msg -> Exception.raise (Generic.failure msg ())
   (vb, pairs) = match Value.load (Value.deserialize b) with
     Left _ -> bad "unship: cannot load the envelope"
@@ -963,21 +963,21 @@ unix.unship b =
     Right v -> v
 
 -- The generic sandbox entrypoint: argv is the shipped script file.
-unix.Sh.runner : '{IO, Exception} ()
-unix.Sh.runner = do
+upkg.Sh.runner : '{IO, Exception} ()
+upkg.Sh.runner = do
   match !IO.getArgs with
     [file] ->
-      script = unix.unship (readFile (FilePath file))
-      unix.Sh.build (script : '{IO, Exception, unix.Sh} ())
+      script = upkg.unship (readFile (FilePath file))
+      upkg.Sh.build (script : '{IO, Exception, upkg.Sh} ())
     _ ->
       Exception.raise (Generic.failure "usage: runner <script.uv>" ())
 
 -- Derivation JSON for a ucm-run builder: explicit args, env and
 -- inputs.srcs, no structured attrs (env is the API here).
-unix.drvJsonU :
+upkg.drvJsonU :
   Text -> Text -> [Text] -> [(Text, Text)] -> [(Text, Text)] -> [Text]
     -> Text
-unix.drvJsonU name builder args envs depDrvs srcs =
+upkg.drvJsonU name builder args envs depDrvs srcs =
   inputDrv = p -> match p with
     (drvPath, outNames) ->
       ( Text.drop 11 drvPath
@@ -997,7 +997,7 @@ unix.drvJsonU name builder args envs depDrvs srcs =
       , ( "inputs"
         , Json.object
             [ ( "drvs"
-              , Json.object (List.map inputDrv (unix.groupDeps depDrvs))
+              , Json.object (List.map inputDrv (upkg.groupDeps depDrvs))
               )
             , ( "srcs"
               , Json.array (List.map (s -> Json.text (Text.drop 11 s)) srcs)
@@ -1005,47 +1005,47 @@ unix.drvJsonU name builder args envs depDrvs srcs =
             ]
         )
       , ("name", Json.text name)
-      , ("outputs", unix.caOutputs)
-      , ("system", Json.text unix.system)
+      , ("outputs", upkg.caOutputs)
+      , ("system", Json.text upkg.system)
       , ("version", Json.nat 4)
       ])
 
-unix.realiseU : unix.UPkg -> {IO, Exception} Text
-unix.realiseU up = unix.submit (unix.planU up)
+upkg.realiseU : upkg.UPkg -> {IO, Exception} Text
+upkg.realiseU up = upkg.submit (upkg.planU up)
 
 -- ----------------------------------------------------------------
 -- A tiny package set.
 
-pkgs.greeting : unix.Pkg
+pkgs.greeting : upkg.Pkg
 pkgs.greeting =
-  unix.Pkg.Pkg
+  upkg.Pkg.Pkg
     "greeting"
     "echo hello from the unison frontend > $out"
     []
 
-pkgs.banner : unix.Pkg
+pkgs.banner : upkg.Pkg
 pkgs.banner =
-  unix.Pkg.Pkg
+  upkg.Pkg.Pkg
     "banner"
     "read -r line < @greeting@; { echo \"$line\"; echo this is nix without nixexpr; } > $out"
-    [unix.Dep.Local pkgs.greeting]
+    [upkg.Dep.Local pkgs.greeting]
 
 -- Uses real nixpkgs packages: hello from the binary cache, tr from
 -- coreutils. Mixes a local CA dep (banner) with nixpkgs deps.
-pkgs.shout : unix.Pkg
+pkgs.shout : upkg.Pkg
 pkgs.shout =
-  unix.Pkg.Pkg
+  upkg.Pkg.Pkg
     "shout"
     "{ @hello@/bin/hello; @coreutils@/bin/tr a-z A-Z < @banner@; } > $out"
-    [ unix.Dep.Nixpkgs "hello"
-    , unix.Dep.Nixpkgs "coreutils"
-    , unix.Dep.Local pkgs.banner
+    [ upkg.Dep.Nixpkgs "hello"
+    , upkg.Dep.Nixpkgs "coreutils"
+    , upkg.Dep.Local pkgs.banner
     ]
 
 -- The milestone: compile GNU hello 2.12.1 from the upstream
 -- tarball. nixpkgs ships 2.12.3, so this is not a replay -- the
 -- source fetch and build are ours. Toolchain from nixpkgs.
-pkgs.gnuhello : unix.Pkg
+pkgs.gnuhello : upkg.Pkg
 pkgs.gnuhello =
   script =
     Text.join
@@ -1061,32 +1061,32 @@ pkgs.gnuhello =
       ]
   toolchain =
     List.map
-      unix.Dep.Nixpkgs
+      upkg.Dep.Nixpkgs
       [ "bash", "coreutils", "gnugrep", "gnused", "gawk", "gnutar"
       , "gzip", "gnumake", "gcc", "gettext"
       ]
   src =
-    unix.Dep.Fetch
+    upkg.Dep.Fetch
       "hello-src"
       "https://ftp.gnu.org/gnu/hello/hello-2.12.1.tar.gz"
       "sha256-jZkUKv2SV28wsM18tCqNxoCZmLxdYH2Idh9RLibH2yA="
-  unix.Pkg.Pkg "hello-2.12.1" script (src +: toolchain)
+  upkg.Pkg.Pkg "hello-2.12.1" script (src +: toolchain)
 
 -- The payoff of typed derivations: a nixpkgs override is a pure
 -- function on a value. Rename, add a configure flag, drop the test
 -- suite. The daemon rebuilds hello from source under the new
 -- identity.
-pkgs.uniHello.override : unix.Drv -> unix.Drv
+pkgs.uniHello.override : upkg.Drv -> upkg.Drv
 pkgs.uniHello.override d =
   d
-    |> unix.Drv.rename "hello-uni"
-    |> unix.Drv.setAttr
+    |> upkg.Drv.rename "hello-uni"
+    |> upkg.Drv.setAttr
          "configureFlags"
          (Json.array [Json.text "--program-prefix=uni-"])
-    |> unix.Drv.setAttr "doCheck" (Json.Boolean false)
-    |> unix.Drv.setAttr "doInstallCheck" (Json.Boolean false)
+    |> upkg.Drv.setAttr "doCheck" (Json.Boolean false)
+    |> upkg.Drv.setAttr "doInstallCheck" (Json.Boolean false)
 
-pkgs.registry : [(Text, unix.Pkg)]
+pkgs.registry : [(Text, upkg.Pkg)]
 pkgs.registry =
   [ ("greeting", pkgs.greeting)
   , ("banner", pkgs.banner)
@@ -1099,35 +1099,35 @@ pkgs.registry =
 -- fine. realiseU ships the closure (value + code) to the sandbox;
 -- a generic runner loads and runs it there.
 
-pkgs.ugreeting : unix.UPkg
+pkgs.ugreeting : upkg.UPkg
 pkgs.ugreeting =
-  unix.UPkg.UPkg
+  upkg.UPkg.UPkg
     "ugreeting"
-    (do writeFileUtf8 (FilePath unix.Sh.out) "hello from a unison builder\n")
+    (do writeFileUtf8 (FilePath upkg.Sh.out) "hello from a unison builder\n")
     []
 
 -- GNU hello again, but the build script is Unison end to end.
-pkgs.uhello : unix.UPkg
+pkgs.uhello : upkg.UPkg
 pkgs.uhello =
   script = do
-    use unix.Sh run cd dep
+    use upkg.Sh run cd dep
     run "tar" ["xzf", dep "hello-src"]
     cd "hello-2.12.1"
-    run "./configure" ["--prefix=" ++ unix.Sh.out]
+    run "./configure" ["--prefix=" ++ upkg.Sh.out]
     run "make" []
     run "make" ["install"]
   src =
-    unix.Dep.Fetch
+    upkg.Dep.Fetch
       "hello-src"
       "https://ftp.gnu.org/gnu/hello/hello-2.12.1.tar.gz"
       "sha256-jZkUKv2SV28wsM18tCqNxoCZmLxdYH2Idh9RLibH2yA="
   toolchain =
     List.map
-      unix.Dep.Nixpkgs
+      upkg.Dep.Nixpkgs
       [ "bash", "coreutils", "gnugrep", "gnused", "gawk", "gnutar"
       , "gzip", "gnumake", "gcc", "gettext"
       ]
-  unix.UPkg.UPkg "uhello-2.12.1" script (src +: toolchain)
+  upkg.UPkg.UPkg "uhello-2.12.1" script (src +: toolchain)
 
 -- ----------------------------------------------------------------
 -- Configuration across stages: one typed record steers the dep
@@ -1141,19 +1141,19 @@ pkgs.uhello =
 -- store because the frontend never sees it. The stage each field
 -- binds at is visible in its type: Nat and Boolean bake at build
 -- time, Secret defers to run time.
-type unix.Secret = FromEnv Text | FromFile Text
+type upkg.Secret = FromEnv Text | FromFile Text
 
-type unix.NginxConfig =
+type upkg.NginxConfig =
   { port : Nat
   , workers : Nat
   , gzip : Boolean
-  , content : unix.Pkg
-  , auth : Optional (Text, unix.Secret)
+  , content : upkg.Pkg
+  , auth : Optional (Text, upkg.Secret)
   }
 
 -- Pure conf renderer. Runs inside the sandbox as shipped code.
-unix.nginx.conf : Nat -> Nat -> Boolean -> Boolean -> Text -> Text
-unix.nginx.conf port workers gzip authOn root =
+upkg.nginx.conf : Nat -> Nat -> Boolean -> Boolean -> Text -> Text
+upkg.nginx.conf port workers gzip authOn root =
   Text.join
     "\n"
     [ "daemon off;"
@@ -1186,41 +1186,41 @@ unix.nginx.conf port workers gzip authOn root =
     , ""
     ]
 
-unix.mkNginx : unix.NginxConfig -> unix.UPkg
-unix.mkNginx cfg =
+upkg.mkNginx : upkg.NginxConfig -> upkg.UPkg
+upkg.mkNginx cfg =
   -- Destructure before the lambda: the closure captures these
   -- scalars, not the whole record (which drags the content Pkg).
-  port = unix.NginxConfig.port cfg
-  workers = unix.NginxConfig.workers cfg
-  gzip = unix.NginxConfig.gzip cfg
-  contentName = unix.Pkg.name (unix.NginxConfig.content cfg)
+  port = upkg.NginxConfig.port cfg
+  workers = upkg.NginxConfig.workers cfg
+  gzip = upkg.NginxConfig.gzip cfg
+  contentName = upkg.Pkg.name (upkg.NginxConfig.content cfg)
   -- The wrapper preamble that resolves the secret at run time.
   -- Only shell text is captured; the secret itself never exists
   -- at eval or build time.
-  authPre = match unix.NginxConfig.auth cfg with
+  authPre = match upkg.NginxConfig.auth cfg with
     None -> []
-    Some (user, unix.Secret.FromEnv var) ->
+    Some (user, upkg.Secret.FromEnv var) ->
       [ ": \"${" ++ var ++ ":?set " ++ var
           ++ " to the basic auth password}\""
       , "umask 077"
       , "printf '%s:{PLAIN}%s\\n' '" ++ user ++ "' \"$" ++ var
           ++ "\" > /tmp/nginx-unison-htpasswd"
       ]
-    Some (user, unix.Secret.FromFile path) ->
+    Some (user, upkg.Secret.FromFile path) ->
       [ "umask 077"
       , "printf '%s:{PLAIN}%s\\n' '" ++ user ++ "' \"$(cat " ++ path
           ++ ")\" > /tmp/nginx-unison-htpasswd"
       ]
   authOn = Boolean.not (List.isEmpty authPre)
   script = do
-    use unix.Sh run dep
-    out = unix.Sh.out
+    use upkg.Sh run dep
+    out = upkg.Sh.out
     html = out ++ "/html"
     run "mkdir" ["-p", html, out ++ "/bin"]
     run "cp" [dep contentName, html ++ "/index.html"]
     writeFileUtf8
       (FilePath (out ++ "/nginx.conf"))
-      (unix.nginx.conf port workers gzip authOn html)
+      (upkg.nginx.conf port workers gzip authOn html)
     writeFileUtf8
       (FilePath (out ++ "/bin/serve"))
       (Text.join
@@ -1235,27 +1235,27 @@ unix.mkNginx cfg =
              , ""
              ]))
     run "chmod" ["+x", out ++ "/bin/serve"]
-  unix.UPkg.UPkg
+  upkg.UPkg.UPkg
     ("nginx-" ++ contentName)
     script
-    [ unix.Dep.Nixpkgs "nginx"
-    , unix.Dep.Nixpkgs "coreutils"
-    , unix.Dep.Local (unix.NginxConfig.content cfg)
+    [ upkg.Dep.Nixpkgs "nginx"
+    , upkg.Dep.Nixpkgs "coreutils"
+    , upkg.Dep.Local (upkg.NginxConfig.content cfg)
     ]
 
 -- The instance: serve the banner built by our own frontend, with
 -- basic auth whose password arrives at run time via $NGINX_PASSWORD.
-pkgs.unginx : unix.UPkg
+pkgs.unginx : upkg.UPkg
 pkgs.unginx =
-  unix.mkNginx
-    (unix.NginxConfig.NginxConfig
+  upkg.mkNginx
+    (upkg.NginxConfig.NginxConfig
       8080
       2
       true
       pkgs.banner
-      (Some ("admin", unix.Secret.FromEnv "NGINX_PASSWORD")))
+      (Some ("admin", upkg.Secret.FromEnv "NGINX_PASSWORD")))
 
-pkgs.uregistry : [(Text, unix.UPkg)]
+pkgs.uregistry : [(Text, upkg.UPkg)]
 pkgs.uregistry =
   [ ("ugreeting", pkgs.ugreeting)
   , ("uhello", pkgs.uhello)
@@ -1265,13 +1265,13 @@ pkgs.uregistry =
 -- ----------------------------------------------------------------
 -- Entry points.
 
-unix.test.main : '{IO, Exception} ()
-unix.test.main = do
+upkg.test.main : '{IO, Exception} ()
+upkg.test.main = do
   expectOut = "/1rz4g4znpzjwh1xymhjpm42vipw92pr73vdgl6xs1hycac8kf2n9"
-  gotOut = unix.placeholder "out"
+  gotOut = upkg.placeholder "out"
   expectUp = "/06vf5fh13wskpg2pr3wdh7r95xhyx1j9sp8y3qga3b1qlpbjpq49"
   gotUp =
-    unix.upstreamPlaceholder
+    upkg.upstreamPlaceholder
       "/nix/store/b9mn5w3x4p2mi9y5344pfykak46f71ys-dep-a.drv" "out"
   check = label -> expect -> got -> let
     if expect == (got : Text)
@@ -1280,25 +1280,25 @@ unix.test.main = do
   check "own-output placeholder" expectOut gotOut
   check "upstream placeholder" expectUp gotUp
 
-unix.main : '{IO, Exception} ()
-unix.main = do
+upkg.main : '{IO, Exception} ()
+upkg.main = do
   match !IO.getArgs with
     ["index"] ->
       printLine
-        ("evaluating " ++ Nat.toText (List.size unix.index.attrs)
+        ("evaluating " ++ Nat.toText (List.size upkg.index.attrs)
           ++ " attrs in one nix eval ...")
-      !unix.index.generate
+      !upkg.index.generate
       printLine "wrote src/nixpkgs-index.u"
     ["deep-hello"] ->
-      (rootDrv, _, _) = unix.resolveNixpkgs "hello"
+      (rootDrv, _, _) = upkg.resolveNixpkgs "hello"
       printLine ("importing closure of " ++ rootDrv ++ " ...")
-      closure = unix.importClosure rootDrv
+      closure = upkg.importClosure rootDrv
       printLine ("  " ++ Nat.toText (List.size closure) ++ " derivations")
       targets =
         List.foldLeft
           (acc -> p -> match p with
             (b, d) ->
-              n = unix.Drv.name d
+              n = upkg.Drv.name d
               if (n Text.== "stdenv-linux")
                 || (n Text.== "stdenv-linux-no-cc")
               then acc :+ b
@@ -1310,54 +1310,54 @@ unix.main = do
       marker = "echo '>>> hello from the unison graph rewrite <<<'"
       f = d -> let
         old =
-          Optional.getOrElse "" (unix.assoc.lookup "preHook" (unix.Drv.env d))
-        unix.Drv.setEnv "preHook" (old ++ "\n" ++ marker) d
-      marks = unix.closure.markAll closure targets
+          Optional.getOrElse "" (upkg.assoc.lookup "preHook" (upkg.Drv.env d))
+        upkg.Drv.setEnv "preHook" (old ++ "\n" ++ marker) d
+      marks = upkg.closure.markAll closure targets
       nAff =
         List.size (List.filter (p -> at2 p) marks)
       printLine ("  affected: " ++ Nat.toText nAff ++ " drvs to rewrite")
       (_, newRoot) =
-        unix.closure.rewrite closure marks targets f []
+        upkg.closure.rewrite closure marks targets f []
           (Text.drop 11 rootDrv)
       printLine ("building " ++ newRoot ++ " ...")
       out =
-        unix.nix
+        upkg.nix
           ["build", "--no-link", "--print-out-paths", newRoot ++ "^out"]
           ""
-      printLine ("out: " ++ unix.chomp out)
+      printLine ("out: " ++ upkg.chomp out)
     ["uni-hello"] ->
       printLine "importing nixpkgs#hello ..."
-      d = unix.importDrv "hello"
-      d2 = unix.Drv.caify (pkgs.uniHello.override d)
-      drv = unix.Drv.realise d2
+      d = upkg.importDrv "hello"
+      d2 = upkg.Drv.caify (pkgs.uniHello.override d)
+      drv = upkg.Drv.realise d2
       printLine ("  drv hello-uni -> " ++ drv)
       printLine ("building " ++ drv ++ " ...")
       out =
-        unix.nix
+        upkg.nix
           ["build", "--no-link", "--print-out-paths", drv ++ "^out"]
           ""
-      printLine ("out: " ++ unix.chomp out)
+      printLine ("out: " ++ upkg.chomp out)
     [pkgName] ->
-      match unix.assoc.lookup pkgName pkgs.registry with
+      match upkg.assoc.lookup pkgName pkgs.registry with
         Some pkg ->
           printLine ("realising " ++ pkgName ++ " ...")
-          drv = unix.realise pkg
+          drv = upkg.realise pkg
           printLine ("building " ++ drv ++ " ...")
           out =
-            unix.nix
+            upkg.nix
               ["build", "--no-link", "--print-out-paths", drv ++ "^out"]
               ""
-          printLine ("out: " ++ unix.chomp out)
-        None -> match unix.assoc.lookup pkgName pkgs.uregistry with
+          printLine ("out: " ++ upkg.chomp out)
+        None -> match upkg.assoc.lookup pkgName pkgs.uregistry with
           Some up ->
             printLine ("realising " ++ pkgName ++ " (unison builder) ...")
-            drv = unix.realiseU up
+            drv = upkg.realiseU up
             printLine ("building " ++ drv ++ " ...")
             out =
-              unix.nix
+              upkg.nix
                 ["build", "--no-link", "--print-out-paths", drv ++ "^out"]
                 ""
-            printLine ("out: " ++ unix.chomp out)
+            printLine ("out: " ++ upkg.chomp out)
           None ->
             printLine
               ("unknown package: " ++ pkgName ++ " (known: "
@@ -1366,4 +1366,4 @@ unix.main = do
                     (List.map at1 pkgs.registry
                       ++ List.map at1 pkgs.uregistry)
                 ++ ")")
-    _ -> printLine "usage: unix <package>"
+    _ -> printLine "usage: upkg <package>"

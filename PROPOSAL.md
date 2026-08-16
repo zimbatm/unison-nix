@@ -1,4 +1,4 @@
-# upkgs: a proposal for a nixpkgs-shaped package repository with Unison as the frontend
+# upkg: a proposal for a nixpkgs-shaped package repository with Unison as the frontend
 
 > Status: design exploration, 100% LLM-generated (Claude), based on (a) the
 > working spike in this repo and (b) a deep survey of the nixpkgs source tree
@@ -23,7 +23,7 @@ other 572 nodes untouched and still cache-served. That inverts the design:
 
 - **nixpkgs**: lazy fixpoint record, customized by stacking overlays before
   eval, then evaluated into a drv graph.
-- **upkgs**: strict typed definitions in a content-addressed codebase,
+- **upkg**: strict typed definitions in a content-addressed codebase,
   compiled once, producing a drv graph, customized by **typed rewrites on
   the graph**.
 
@@ -129,7 +129,7 @@ the 88.5% zero-argument majority becomes plain top-level definitions.
 nixpkgs: `lib.fix` over a 24k-field record, `with pkgs;` dynamic scoping,
 overlays as `final: prev:` functions, `super`-vs-`self` discipline.
 
-upkgs: a memoized resolver:
+upkg: a memoized resolver:
 
 ```unison
 resolve : Ctx -> DepKind -> Name -> Result Unavailable Pkg
@@ -152,7 +152,7 @@ mechanically.
 
 ### 3.3 Overrides are graph rewrites
 
-The spike's `unix.closure.rewrite` is the primitive: mark the drvs that
+The spike's `upkg.closure.rewrite` is the primitive: mark the drvs that
 depend on a target, rewrite bottom-up (new input keys, upstream placeholders
 for old literal paths, user function on target nodes, CA-ification), leave
 the rest untouched. Demonstrated: stdenv `preHook` marker → 27 of 599 drvs
@@ -161,7 +161,7 @@ substituted from cache.
 
 What this replaces, with measured nixpkgs cost:
 
-| nixpkgs mechanism | cost today | upkgs equivalent |
+| nixpkgs mechanism | cost today | upkg equivalent |
 |---|---|---|
 | `.override` / `.overrideAttrs` closures | attached to every one of 24k+ values; 2,494 + 1,968 call sites | re-run the (pure, fast) definition, or rewrite the graph node |
 | `splice.nix` + `__spliced` | 165 lines + 12 consumption sites + tryEval guards | `DepKind` index in the type; resolver returns the right variant |
@@ -176,7 +176,7 @@ consulted only by compilers.
 
 From the spike: early cutoff held across drv-hash changes (structured-attrs
 migration; two different builder mechanisms producing byte-identical outputs
-at the same store path). Fixed-output paths are universal, so upkgs inherits
+at the same store path). Fixed-output paths are universal, so upkg inherits
 every existing binary cache's source tarballs for free. Honest limit: a
 CA-ified rewrite can never cache-hit the original input-addressed build even
 when byte-identical; a deep override rebuilds its affected cone once.
@@ -264,7 +264,7 @@ verify   : Lockfile e -> Lockfile e -> Either Drift ()
 ```
 
 This is the shape every nixpkgs ecosystem converged on (cargo, npm, go,
-pnpm, composer, mix, gradle); upkgs implements it once and instantiates per
+pnpm, composer, mix, gradle); upkg implements it once and instantiates per
 ecosystem. Per-artifact FODs with lockfile-supplied hashes (importCargoLock
 style) are the default — zero user-maintained hashes, maximal cache sharing;
 the single-vendor-FOD mode remains for ecosystems whose lockfiles lack
@@ -274,7 +274,7 @@ integrity fields.
 
 hackage-packages.nix (783k lines), perl-packages.nix (40k), the vim/emacs
 sets: these are resolver outputs serialized as source because Nix can't run
-a resolver at eval time. In upkgs they are typed index values —
+a resolver at eval time. In upkg they are typed index values —
 content-addressed data blobs (like the spike's pinned nixpkgs index, which
 is a codebase value synced with one batch eval) — plus a
 `resolve : Index -> Snapshot -> [Correction] -> Map Name Pkg` function. The
@@ -318,12 +318,12 @@ That bluntness is also why Nix's warts exist — import-from-derivation
 blocking eval on builds, `--impure`, fetchers special-cased in the
 interpreter.
 
-upkgs gets the same guarantee from ability types, per definition and
+upkg gets the same guarantee from ability types, per definition and
 machine-checked (demonstrated in the spike):
 
 ```unison
-unix.plan   : unix.Pkg -> {Exception} unix.Plan   -- typechecker-proved: no IO
-unix.submit : unix.Plan -> {IO, Exception} Text   -- the only effectful step
+upkg.plan   : upkg.Pkg -> {Exception} upkg.Plan   -- typechecker-proved: no IO
+upkg.submit : upkg.Plan -> {IO, Exception} Text   -- the only effectful step
 ```
 
 - **Package definitions and the resolver are ability-free.** `Pkg` values
@@ -339,7 +339,7 @@ unix.submit : unix.Plan -> {IO, Exception} Text   -- the only effectful step
   transitive code closure is enumerable by hash (`Code.dependencies`; base
   ships `Value.validateSandboxed` for exactly this), so a curated namespace
   can mechanically reject package definitions whose closure touches IO
-  builtins. Nix enforces purity in the interpreter; upkgs enforces it at
+  builtins. Nix enforces purity in the interpreter; upkg enforces it at
   publish time with the same confidence and better error locality.
 - **Honest difference**: the guarantee is opt-in structure, not a global
   language property. The repo convention ("package namespaces are
@@ -366,7 +366,7 @@ Caveats stated plainly: the synthetic drvs are simpler than mkDerivation's
 output; real per-package logic narrows the ~700× per-drv gap but also runs
 compiled rather than interpreted. The structural difference is what matters:
 Nix conflates parse+typecheck+graph-construction into an "eval" phase every
-user re-pays; upkgs factors them so use-time work is compiled code over
+user re-pays; upkg factors them so use-time work is compiled code over
 memoized data.
 
 ## 8. Migration path
@@ -402,7 +402,7 @@ The spike already built the bridges, in increasing independence:
   our largest test was 5k defs in one file). Share sync is hash-incremental
   by design but untested at this scale.
 - **The `update`-conflict workflow** (failed updates rewrite the scratch
-  file) is rough for a contribution flow at nixpkgs scale; upkgs would need
+  file) is rough for a contribution flow at nixpkgs scale; upkg would need
   contribution tooling nixpkgs gets from git for free.
 - **Runtime `setenv` and process-control gaps in Unison base** limit the Sh
   dialect today (env fixed at derivation time).
