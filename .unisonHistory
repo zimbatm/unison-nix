@@ -3,6 +3,38 @@ compile upkg.test.main .ucm-compiled/test
 compile upkg.main .ucm-compiled/upkg
 update
 load src/upkg.u
+update
+load src/upkg.u
+delete.term upkg.realise.go
+delete.term upkg.resolveDeps
+delete.term upkg.fetch
+delete.namespace bench
+branch.delete /update-main
+switch /main
+update
+load src/upkg.u
+delete.namespace bench
+branch.delete /update-main
+switch /main
+update
+load src/upkg.u
+find : k -> Map k v -> Boolean
+find Map.fromList
+find Map.alter
+find Map.put
+find Set.insert
+find Set.contains
+find test.verify
+find Decoder.run
+find Map.get
+find Decoder
+find List.find
+find : Text -> Map Text v -> Optional v
+compile upkg.Sh.runner .ucm-compiled/runner
+compile upkg.test.main .ucm-compiled/test
+compile upkg.main .ucm-compiled/upkg
+update
+load src/upkg.u
 project.rename upkg
 move.namespace upkgs upkg
 compile upkgs.Sh.runner .ucm-compiled/runner
@@ -66,35 +98,3 @@ load src/unix.u
 delete.term pkgs.uhello.script
 delete.term pkgs.uhello.main
 delete.term pkgs.ugreeting.script
-delete.term pkgs.ugreeting.main
-delete.term unix.compileEntry
-delete.term unix.UPkg.entry.modify
-delete.term unix.UPkg.entry.set
-delete.term unix.UPkg.entry
-branch.delete /update-main
-switch /main
-update
-load src/unix.u
-delete.term pkgs.uhello.script
-delete.term pkgs.uhello.main
-delete.term pkgs.ugreeting.script
-delete.term pkgs.ugreeting.main
-delete.term unix.compileEntry
-delete.term unix.UPkg.entry.modify
-delete.term unix.UPkg.entry.set
-delete.term unix.UPkg.entry
-branch.delete /update-main
-switch /main
-update
-load src/unix.u
-delete.term pkgs.uhello.script
-delete.term pkgs.uhello.main
-delete.term pkgs.ugreeting.script
-delete.term pkgs.ugreeting.main
-delete.term unix.compileEntry
-delete.term unix.UPkg.entry.modify
-delete.term unix.UPkg.entry.set
-delete.term unix.UPkg.entry
-update
-load src/unix.u
-delete.term pkgs.uhello.script

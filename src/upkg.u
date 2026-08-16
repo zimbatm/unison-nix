@@ -102,18 +102,15 @@ upkg.fixedOutputs sri =
 -- never appears twice in inputs.drvs.
 upkg.groupDeps : [(Text, Text)] -> [(Text, [Text])]
 upkg.groupDeps ps =
-  add = acc -> p -> match p with
-    (drvPath, outName) ->
-      match upkg.assoc.lookup drvPath acc with
-        Some outs ->
-          if List.any (o -> o Text.== outName) outs then acc
-          else
-            List.map
-              (q -> match q with
-                (k, v) -> if k == drvPath then (k, v :+ outName) else (k, v))
-              acc
-        None -> acc :+ (drvPath, [outName])
-  List.foldLeft add [] ps
+  union : [Text] -> [Text] -> [Text]
+  union = xs -> ys -> let
+    List.foldLeft
+      (acc -> o -> if List.any (o2 -> o2 Text.== o) acc then acc else acc :+ o)
+      xs
+      ys
+  add = m -> cases (drvPath, outName) ->
+    Map.putWith union drvPath [outName] m
+  Map.toList (List.foldLeft add Map.empty ps)
 
 -- With structured attrs the daemon does not export env vars. The
 -- builder reads .attrs.sh instead. This prelude defines $out (and
@@ -136,7 +133,7 @@ upkg.attrsPrelude =
 -- replaces "" with the computed path on `derivation add`.
 upkg.drvJson' : Text -> Text -> Text -> [(Text, Text)] -> Text -> Json -> Text
 upkg.drvJson' name builder script depDrvs outEnv outputsJson =
-  inputDrv = p -> match p with
+  inputDrv = cases
     (drvPath, outNames) ->
       ( Text.drop 11 drvPath
       , Json.object
@@ -216,7 +213,7 @@ upkg.addDrv j = upkg.chomp (upkg.nix ["derivation", "add"] j)
 -- drv path, output path, and output name. Forcing drvPath also
 -- writes the .drv into the store. The Nix language runs here, but
 -- only as an importer -- like `guix import`.
-upkg.evalNixpkgs : Text -> {IO, Exception} (Text, Text, Text)
+upkg.evalNixpkgs : Text -> {IO, Exception} upkg.Pinned
 upkg.evalNixpkgs attr =
   out =
     upkg.nix
@@ -225,7 +222,7 @@ upkg.evalNixpkgs attr =
       ]
       ""
   match Text.split ?\n out with
-    [drvPath, outPath, outName] -> (drvPath, outPath, outName)
+    [drvPath, outPath, outName] -> upkg.Pinned.Pinned drvPath outPath outName
     _ ->
       Exception.raise
         (Generic.failure ("unexpected eval output for " ++ attr) ())
@@ -237,22 +234,26 @@ upkg.evalNixpkgs attr =
 -- pure lookup plus a file-exists check. The Nix evaluator only
 -- runs on an index miss, or when the .drv was garbage-collected.
 
-upkg.index.lookup :
-  Text -> [(Text, Text, Text, Text)] -> Optional (Text, Text, Text)
-upkg.index.lookup attr xs = match xs with
-  [] -> None
-  (a, d, o, n) +: rest ->
-    if a Text.== attr then Some (d, o, n)
-    else upkg.index.lookup attr rest
+-- A pinned nixpkgs attribute: drv path, default output path and
+-- its name, all fixed at pin time.
+type upkg.Pinned = { drv : Text, out : Text, output : Text }
 
-upkg.resolveNixpkgs : Text -> {IO, Exception} (Text, Text, Text)
+upkg.index.lookup : Text -> Optional upkg.Pinned
+upkg.index.lookup attr =
+  List.findMap
+    (cases (a, d, o, n) ->
+      if a == attr then Some (upkg.Pinned.Pinned d o n) else None)
+    nixpkgs.index
+
+upkg.resolveNixpkgs : Text -> {IO, Exception} upkg.Pinned
 upkg.resolveNixpkgs attr =
-  hit = match upkg.index.lookup attr nixpkgs.index with
-    Some (d, o, n) ->
-      if FilePath.exists (FilePath d) then Some (d, o, n) else None
+  hit = match upkg.index.lookup attr with
+    Some p ->
+      if FilePath.exists (FilePath (upkg.Pinned.drv p)) then Some p
+      else None
     None -> None
   match hit with
-    Some t -> t
+    Some p -> p
     None ->
       printLine ("  eval " ++ attr ++ " (index miss)")
       upkg.evalNixpkgs attr
@@ -310,11 +311,9 @@ upkg.index.generate = do
       ]
   writeFileUtf8 (FilePath "src/nixpkgs-index.u") txt
 
-upkg.assoc.lookup : Text -> [(Text, a)] -> Optional a
-upkg.assoc.lookup k xs = match xs with
-  [] -> None
-  (k2, v) +: rest ->
-    if k == k2 then Some v else upkg.assoc.lookup k rest
+upkg.lookup : Text -> [(Text, a)] -> Optional a
+upkg.lookup k =
+  List.findMap (cases (k2, v) -> if k2 == k then Some v else None)
 
 -- ----------------------------------------------------------------
 -- Pure planning / effectful submission. `plan` computes the whole
@@ -347,9 +346,9 @@ type upkg.Plan = { nodes : [upkg.Node] }  -- deps before dependents
 
 -- Pure index lookup. A miss is a plan-time error, not a fallback
 -- to the evaluator: purity means the oracle runs at pin time only.
-upkg.index.get : Text -> {Exception} (Text, Text, Text)
-upkg.index.get attr = match upkg.index.lookup attr nixpkgs.index with
-  Some t -> t
+upkg.index.get : Text -> {Exception} upkg.Pinned
+upkg.index.get attr = match upkg.index.lookup attr with
+  Some p -> p
   None ->
     Exception.raise
       (Generic.failure
@@ -357,84 +356,84 @@ upkg.index.get attr = match upkg.index.lookup attr nixpkgs.index with
         ())
 
 upkg.plan : upkg.Pkg -> {Exception} upkg.Plan
-upkg.plan pkg = upkg.Plan.Plan (at1 (upkg.plan.go ([], []) pkg))
+upkg.plan pkg = upkg.Plan.Plan (at1 (upkg.plan.go ([], Set.empty) pkg))
 
 upkg.plan.fetchNode :
-  ([upkg.Node], [Text]) -> Text -> Text -> Text
-    -> {Exception} ([upkg.Node], [Text])
+  ([upkg.Node], Set Text) -> Text -> Text -> Text
+    -> {Exception} ([upkg.Node], Set Text)
 upkg.plan.fetchNode acc fname url sri = match acc with
   (nodes, seen) ->
-    if List.any (n -> n Text.== fname) seen then acc
+    if Set.contains fname seen then acc
     else
-      (bashDrv, bashOut, bashOutName) = upkg.index.get "bash"
-      (curlDrv, curlOut, curlOutName) = upkg.index.get "curl"
-      (certDrv, certOut, certOutName) = upkg.index.get "cacert"
+      bash = upkg.index.get "bash"
+      curl = upkg.index.get "curl"
+      cacert = upkg.index.get "cacert"
       script =
-        "export SSL_CERT_FILE=" ++ certOut
-          ++ "/etc/ssl/certs/ca-bundle.crt; " ++ curlOut
+        "export SSL_CERT_FILE=" ++ upkg.Pinned.out cacert
+          ++ "/etc/ssl/certs/ca-bundle.crt; " ++ upkg.Pinned.out curl
           ++ "/bin/curl --fail --location --output \"$out\" " ++ url
       node =
         upkg.Node.Node
           fname
-          (bashOut ++ "/bin/bash")
+          (upkg.Pinned.out bash ++ "/bin/bash")
           (upkg.Action.Script script)
           []
-          [ (upkg.Ref.Path bashDrv, bashOutName)
-          , (upkg.Ref.Path curlDrv, curlOutName)
-          , (upkg.Ref.Path certDrv, certOutName)
+          [ (upkg.Ref.Path (upkg.Pinned.drv bash), upkg.Pinned.output bash)
+          , (upkg.Ref.Path (upkg.Pinned.drv curl), upkg.Pinned.output curl)
+          , (upkg.Ref.Path (upkg.Pinned.drv cacert), upkg.Pinned.output cacert)
           ]
           (Some sri)
-      (nodes :+ node, seen :+ fname)
+      (nodes :+ node, Set.insert fname seen)
 
 -- Resolve a dep list purely: emit nodes for local/fetch deps,
 -- symbolic subs and input refs for all of them. Shared by the Pkg
 -- and UPkg planners.
 upkg.plan.deps :
-  ([upkg.Node], [Text]) -> [upkg.Dep]
+  ([upkg.Node], Set Text) -> [upkg.Dep]
     -> {Exception}
-        ([upkg.Node], [Text], [(Text, upkg.Ref)], [(upkg.Ref, Text)])
+        ([upkg.Node], Set Text, [(Text, upkg.Ref)], [(upkg.Ref, Text)])
 upkg.plan.deps acc deps = match acc with
   (nodes, seen) ->
-    step = a -> dep -> match a with
-      (ns, sn, subs, ins) -> match dep with
-        upkg.Dep.Local p ->
-          (ns2, sn2) = upkg.plan.go (ns, sn) p
-          pn = upkg.Pkg.name p
-          ( ns2, sn2
-          , subs :+ (pn, upkg.Ref.Output pn)
-          , ins :+ (upkg.Ref.Drv pn, "out")
-          )
-        upkg.Dep.Nixpkgs attr ->
-          (dp, op, on) = upkg.index.get attr
-          ( ns, sn
-          , subs :+ (attr, upkg.Ref.Path op)
-          , ins :+ (upkg.Ref.Path dp, on)
-          )
-        upkg.Dep.Fetch fname url sri ->
-          (ns2, sn2) = upkg.plan.fetchNode (ns, sn) fname url sri
-          ( ns2, sn2
-          , subs :+ (fname, upkg.Ref.Output fname)
-          , ins :+ (upkg.Ref.Drv fname, "out")
-          )
+    step = cases (ns, sn, subs, ins), dep -> match dep with
+      upkg.Dep.Local p ->
+        (ns2, sn2) = upkg.plan.go (ns, sn) p
+        pn = upkg.Pkg.name p
+        ( ns2, sn2
+        , subs :+ (pn, upkg.Ref.Output pn)
+        , ins :+ (upkg.Ref.Drv pn, "out")
+        )
+      upkg.Dep.Nixpkgs attr ->
+        pin = upkg.index.get attr
+        ( ns, sn
+        , subs :+ (attr, upkg.Ref.Path (upkg.Pinned.out pin))
+        , ins :+ (upkg.Ref.Path (upkg.Pinned.drv pin), upkg.Pinned.output pin)
+        )
+      upkg.Dep.Fetch fname url sri ->
+        (ns2, sn2) = upkg.plan.fetchNode (ns, sn) fname url sri
+        ( ns2, sn2
+        , subs :+ (fname, upkg.Ref.Output fname)
+        , ins :+ (upkg.Ref.Drv fname, "out")
+        )
     List.foldLeft step (nodes, seen, [], []) deps
 
 upkg.plan.go :
-  ([upkg.Node], [Text]) -> upkg.Pkg -> {Exception} ([upkg.Node], [Text])
+  ([upkg.Node], Set Text) -> upkg.Pkg
+    -> {Exception} ([upkg.Node], Set Text)
 upkg.plan.go acc pkg = match pkg with
   upkg.Pkg.Pkg name script deps -> match acc with
     (nodes, seen) ->
-      if List.any (n -> n Text.== name) seen then acc
+      if Set.contains name seen then acc
       else
         (nodes2, seen2, subs, ins) =
-          upkg.plan.deps (nodes, seen :+ name) deps
-        (bashDrv, bashOut, bashOutName) = upkg.index.get "bash"
+          upkg.plan.deps (nodes, Set.insert name seen) deps
+        bash = upkg.index.get "bash"
         node =
           upkg.Node.Node
             name
-            (bashOut ++ "/bin/bash")
+            (upkg.Pinned.out bash ++ "/bin/bash")
             (upkg.Action.Script script)
             subs
-            (ins :+ (upkg.Ref.Path bashDrv, bashOutName))
+            (ins :+ (upkg.Ref.Path (upkg.Pinned.drv bash), upkg.Pinned.output bash))
             None
         (nodes2 :+ node, seen2)
 
@@ -443,49 +442,48 @@ upkg.plan.go acc pkg = match pkg with
 upkg.planU : upkg.UPkg -> {Exception} upkg.Plan
 upkg.planU up = match up with
   upkg.UPkg.UPkg name build deps ->
-    (nodes, _, subs, ins) = upkg.plan.deps ([], []) deps
-    (ucmDrv, ucmOut, ucmOutName) = upkg.index.get "unison-ucm"
+    (nodes, _, subs, ins) = upkg.plan.deps ([], Set.empty) deps
+    ucm = upkg.index.get "unison-ucm"
     node =
       upkg.Node.Node
         name
-        (ucmOut ++ "/bin/ucm")
+        (upkg.Pinned.out ucm ++ "/bin/ucm")
         (upkg.Action.Closure build)
         subs
-        (ins :+ (upkg.Ref.Path ucmDrv, ucmOutName))
+        (ins :+ (upkg.Ref.Path (upkg.Pinned.drv ucm), upkg.Pinned.output ucm))
         None
     upkg.Plan.Plan (nodes :+ node)
 
 -- Fold the plan into the daemon: add each drv, learn its path,
 -- resolve downstream references. Returns the root drv path.
+-- What submit has learned about a planned node: its drv path and
+-- the text dependents splice for its output (a placeholder for CA
+-- nodes, the literal fixed path for FODs).
+type upkg.Built = { drv : Text, out : Text }
+
 upkg.submit : upkg.Plan -> {IO, Exception} Text
 upkg.submit p = match p with
   upkg.Plan.Plan nodes ->
-    look = acc -> n -> match upkg.assoc.lookup n acc with
-      Some pr -> pr
-      None ->
-        Exception.raise
-          (Generic.failure ("plan out of order: " ++ n) ())
-    step = acc -> node -> match node with
+    look = acc -> n -> match Map.get n acc with
+      Some b -> b
+      None -> bug ("plan out of order", n)
+    step = acc -> cases
       upkg.Node.Node name builder action subs ins fixed ->
-        resolveDrv = r -> match r with
+        resolveDrv = cases
           upkg.Ref.Path t -> t
-          upkg.Ref.Drv n -> at1 (look acc n)
-          upkg.Ref.Output n -> at1 (look acc n)
-        resolveOut = r -> match r with
+          upkg.Ref.Drv n -> upkg.Built.drv (look acc n)
+          upkg.Ref.Output n -> upkg.Built.drv (look acc n)
+        resolveOut = cases
           upkg.Ref.Path t -> t
-          upkg.Ref.Drv n -> at1 (look acc n)
-          upkg.Ref.Output n -> at2 (look acc n)
-        depDrvs =
-          List.map
-            (pr -> match pr with (ref, on) -> (resolveDrv ref, on))
-            ins
+          upkg.Ref.Drv n -> upkg.Built.drv (look acc n)
+          upkg.Ref.Output n -> upkg.Built.out (look acc n)
+        depDrvs = List.map (cases (ref, on) -> (resolveDrv ref, on)) ins
         drvPath = match action with
           upkg.Action.Script script ->
             script' =
               List.foldLeft
-                (s -> pr -> match pr with
-                  (tok, ref) ->
-                    Text.replaceAll ("@" ++ tok ++ "@") (resolveOut ref) s)
+                (s -> cases (tok, ref) ->
+                  Text.replaceAll ("@" ++ tok ++ "@") (resolveOut ref) s)
                 script
                 subs
             (outEnv, outsJson) = match fixed with
@@ -507,14 +505,9 @@ upkg.submit p = match p with
             pathEnv =
               Text.join
                 ":"
-                (List.map
-                  (pr -> match pr with (_, ref) -> resolveOut ref ++ "/bin")
-                  subs)
+                (List.map (cases (_, ref) -> resolveOut ref ++ "/bin") subs)
             depEnvs =
-              List.map
-                (pr -> match pr with
-                  (n, ref) -> ("dep_" ++ n, resolveOut ref))
-                subs
+              List.map (cases (n, ref) -> ("dep_" ++ n, resolveOut ref)) subs
             envs =
               [("PATH", pathEnv), ("out", upkg.placeholder "out")] ++ depEnvs
             upkg.addDrv
@@ -531,10 +524,10 @@ upkg.submit p = match p with
               (upkg.exec "nix-store" ["--query", "--outputs", drvPath] "")
           None -> upkg.upstreamPlaceholder drvPath "out"
         printLine ("  drv " ++ name ++ " -> " ++ drvPath)
-        acc :+ (name, (drvPath, outText))
-    final = List.foldLeft step [] nodes
-    match List.last final with
-      Some pr -> at1 (at2 pr)
+        Map.put name (upkg.Built.Built drvPath outText) acc
+    final = List.foldLeft step Map.empty nodes
+    match List.last nodes with
+      Some n -> upkg.Built.drv (look final (upkg.Node.name n))
       None -> Exception.raise (Generic.failure "empty plan" ())
 
 upkg.realise : upkg.Pkg -> {IO, Exception} Text
@@ -569,14 +562,14 @@ type upkg.Drv =
 
 upkg.json.get : Text -> Json -> {Exception} Json
 upkg.json.get k j = match j with
-  Json.Object kvs -> match upkg.assoc.lookup k kvs with
+  Json.Object kvs -> match upkg.lookup k kvs with
     Some v -> v
     None -> Exception.raise (Generic.failure ("json: missing key " ++ k) ())
   _ -> Exception.raise (Generic.failure ("json: not an object at " ++ k) ())
 
 upkg.json.opt : Text -> Json -> Optional Json
 upkg.json.opt k j = match j with
-  Json.Object kvs -> upkg.assoc.lookup k kvs
+  Json.Object kvs -> upkg.lookup k kvs
   _ -> None
 
 upkg.json.asText : Json -> {Exception} Text
@@ -601,19 +594,18 @@ upkg.json.mapText f j = match j with
   Json.Array xs -> Json.Array (List.map (upkg.json.mapText f) xs)
   Json.Object kvs ->
     Json.Object
-      (List.map (p -> match p with (k, v) -> (k, upkg.json.mapText f v)) kvs)
+      (List.map (cases (k, v) -> (k, upkg.json.mapText f v)) kvs)
   _ -> j
 
 -- Upsert a key in a Json object. Non-objects pass through.
 upkg.json.set : Text -> Json -> Json -> Json
 upkg.json.set k v j = match j with
   Json.Object kvs ->
-    if List.any (p -> at1 p Text.== k) kvs
+    if List.any (cases (k2, _) -> k2 Text.== k) kvs
     then
       Json.Object
         (List.map
-          (p -> match p with
-            (k2, v2) -> if k2 Text.== k then (k2, v) else (k2, v2))
+          (cases (k2, v2) -> if k2 Text.== k then (k2, v) else (k2, v2))
           kvs)
     else Json.Object (kvs :+ (k, v))
   _ -> j
@@ -621,7 +613,7 @@ upkg.json.set k v j = match j with
 upkg.Drv.fromJson : Json -> {Exception} upkg.Drv
 upkg.Drv.fromJson j =
   texts = xs -> List.map upkg.json.asText (upkg.json.asArray xs)
-  pairText = p -> match p with (k, v) -> (k, upkg.json.asText v)
+  pairText = cases (k, v) -> (k, upkg.json.asText v)
   out = o -> match upkg.json.opt "path" o with
     Some p -> upkg.Out.Addressed (upkg.json.asText p)
     None -> match upkg.json.opt "hash" o with
@@ -631,8 +623,7 @@ upkg.Drv.fromJson j =
           (upkg.json.asText (upkg.json.get "method" o))
       None -> upkg.Out.Floating
   inputs = upkg.json.get "inputs" j
-  drvIn = p -> match p with
-    (k, v) -> (k, texts (upkg.json.get "outputs" v))
+  drvIn = cases (k, v) -> (k, texts (upkg.json.get "outputs" v))
   upkg.Drv.Drv
     (upkg.json.asText (upkg.json.get "name" j))
     (upkg.json.asText (upkg.json.get "system" j))
@@ -642,7 +633,7 @@ upkg.Drv.fromJson j =
     (List.map drvIn (upkg.json.asObject (upkg.json.get "drvs" inputs)))
     (texts (upkg.json.get "srcs" inputs))
     (List.map
-      (p -> match p with (k, v) -> (k, out v))
+      (cases (k, v) -> (k, out v))
       (upkg.json.asObject (upkg.json.get "outputs" j)))
     (upkg.json.opt "structuredAttrs" j)
 
@@ -656,7 +647,7 @@ upkg.Drv.toJson d = match d with
           [("hashAlgo", Json.text "sha256"), ("method", Json.text "nar")]
       upkg.Out.Fixed h m ->
         Json.object [("hash", Json.text h), ("method", Json.text m)]
-    inDrv = p -> match p with
+    inDrv = cases
       (k, outs) ->
         ( k
         , Json.object
@@ -664,7 +655,7 @@ upkg.Drv.toJson d = match d with
             , ("outputs", Json.array (List.map Json.text outs))
             ]
         )
-    kv = p -> match p with (k, v) -> (k, Json.text v)
+    kv = cases (k, v) -> (k, Json.text v)
     base =
       [ ("args", Json.array (List.map Json.text args))
       , ("builder", Json.text builder)
@@ -678,7 +669,7 @@ upkg.Drv.toJson d = match d with
       , ("name", Json.text name)
       , ( "outputs"
         , Json.object
-            (List.map (p -> match p with (k, v) -> (k, outJson v)) outputs)
+            (List.map (cases (k, v) -> (k, outJson v)) outputs)
         )
       ]
     withAttrs = match attrs with
@@ -696,7 +687,7 @@ upkg.Drv.caify : upkg.Drv -> upkg.Drv
 upkg.Drv.caify d =
   subs =
     List.foldLeft
-      (acc -> p -> match p with
+      (acc -> cases
         (oname, upkg.Out.Addressed path) ->
           acc :+ ("/nix/store/" ++ path, upkg.placeholder oname)
         _ -> acc)
@@ -704,28 +695,27 @@ upkg.Drv.caify d =
       (upkg.Drv.outputs d)
   swap = t -> let
     List.foldLeft
-      (s -> pr -> match pr with (old, new) -> Text.replaceAll old new s)
+      (s -> cases (old, new) -> Text.replaceAll old new s)
       t
       subs
   d
     |> upkg.Drv.env.modify
-         (List.map (p -> match p with (k, v) -> (k, swap v)))
+         (List.map (cases (k, v) -> (k, swap v)))
     |> upkg.Drv.args.modify (List.map swap)
     |> upkg.Drv.attrs.modify (Optional.map (upkg.json.mapText swap))
     |> upkg.Drv.outputs.modify
          (List.map
-           (p -> match p with
+           (cases
              (k, upkg.Out.Fixed h m) -> (k, upkg.Out.Fixed h m)
              (k, _) -> (k, upkg.Out.Floating)))
 
 upkg.Drv.setEnv : Text -> Text -> upkg.Drv -> upkg.Drv
 upkg.Drv.setEnv k v d =
   upsert = kvs -> let
-    if List.any (p -> at1 p Text.== k) kvs
+    if List.any (cases (k2, _) -> k2 Text.== k) kvs
     then
       List.map
-        (p -> match p with
-          (k2, v2) -> if k2 Text.== k then (k2, v) else (k2, v2))
+        (cases (k2, v2) -> if k2 Text.== k then (k2, v) else (k2, v2))
         kvs
     else kvs :+ (k, v)
   upkg.Drv.env.modify upsert d
@@ -761,43 +751,41 @@ upkg.Drv.realise d = upkg.addDrv (Json.toText (upkg.Drv.toJson d))
 -- still serves them.
 
 -- Closure keyed by drv basename, from `nix derivation show -r`.
-upkg.importClosure : Text -> {IO, Exception} [(Text, upkg.Drv)]
+upkg.importClosure : Text -> {IO, Exception} (Map Text upkg.Drv)
 upkg.importClosure drvPath =
   raw = upkg.nix ["derivation", "show", "-r", drvPath] ""
   j = Json.fromText raw
   ds = upkg.json.asObject (upkg.json.get "derivations" j)
-  List.map (p -> match p with (b, dj) -> (b, upkg.Drv.fromJson dj)) ds
+  Map.fromList (List.map (cases (b, dj) -> (b, upkg.Drv.fromJson dj)) ds)
 
 -- Does node b transitively depend on a target? Memoized; nodes
 -- outside the closure map count as unaffected.
 upkg.closure.mark :
-  [(Text, upkg.Drv)] -> (Text -> Boolean) -> [(Text, Boolean)] -> Text
-    -> ([(Text, Boolean)], Boolean)
+  Map Text upkg.Drv -> (Text -> Boolean) -> Map Text Boolean -> Text
+    -> (Map Text Boolean, Boolean)
 upkg.closure.mark closure isTarget cache b =
-  match upkg.assoc.lookup b cache with
+  match Map.get b cache with
     Some r -> (cache, r)
     None ->
-      if isTarget b then (cache :+ (b, true), true)
-      else match upkg.assoc.lookup b closure with
-        None -> (cache :+ (b, false), false)
+      if isTarget b then (Map.put b true cache, true)
+      else match Map.get b closure with
+        None -> (Map.put b false cache, false)
         Some d ->
-          step = acc -> p -> match acc with
-            (c, hit) -> match p with
-              (i, _) ->
-                (c2, r) = upkg.closure.mark closure isTarget c i
-                (c2, hit || r)
+          step = cases (c, hit), (i, _) ->
+            (c2, r) = upkg.closure.mark closure isTarget c i
+            (c2, hit || r)
           (cache2, hit) =
             List.foldLeft step (cache, false) (upkg.Drv.inputDrvs d)
-          (cache2 :+ (b, hit), hit)
+          (Map.put b hit cache2, hit)
 
 upkg.closure.markAll :
-  [(Text, upkg.Drv)] -> [Text] -> [(Text, Boolean)]
+  Map Text upkg.Drv -> Set Text -> Map Text Boolean
 upkg.closure.markAll closure targets =
-  isT = b -> List.any (t -> t Text.== b) targets
+  isT = b -> Set.contains b targets
   List.foldLeft
-    (c -> p -> at1 (upkg.closure.mark closure isT c (at1 p)))
-    []
-    closure
+    (c -> cases (b, _) -> at1 (upkg.closure.mark closure isT c b))
+    Map.empty
+    (Map.toList closure)
 
 -- Rewrite bottom-up. An affected drv gets: new inputDrvs keys for
 -- its rewritten inputs, upstream placeholders in place of their old
@@ -805,61 +793,51 @@ upkg.closure.markAll closure targets =
 -- CA-ification. Returns the new drv path; the cache maps old
 -- basename -> new drv path.
 upkg.closure.rewrite :
-  [(Text, upkg.Drv)] -> [(Text, Boolean)] -> [Text]
-    -> (upkg.Drv -> upkg.Drv) -> [(Text, Text)] -> Text
-    -> {IO, Exception} ([(Text, Text)], Text)
+  Map Text upkg.Drv -> Map Text Boolean -> Set Text
+    -> (upkg.Drv -> upkg.Drv) -> Map Text Text -> Text
+    -> {IO, Exception} (Map Text Text, Text)
 upkg.closure.rewrite closure marks targets f cache b =
-  affected = k -> Optional.getOrElse false (upkg.assoc.lookup k marks)
-  match upkg.assoc.lookup b cache with
+  affected = k -> Map.getOrElse false k marks
+  match Map.get b cache with
     Some p -> (cache, p)
     None ->
       if Boolean.not (affected b) then (cache, "/nix/store/" ++ b)
       else
-        d = match upkg.assoc.lookup b closure with
-          Some d -> d
-          None ->
-            Exception.raise
-              (Generic.failure ("not in closure: " ++ b) ())
-        step = acc -> p -> match acc with
-          (c, ins, subs) -> match p with
-            (i, outs) ->
-              if Boolean.not (affected i) then (c, ins :+ (i, outs), subs)
-              else
-                (c2, newPath) =
-                  upkg.closure.rewrite closure marks targets f c i
-                iDrv = match upkg.assoc.lookup i closure with
-                  Some x -> x
-                  None ->
-                    Exception.raise
-                      (Generic.failure ("not in closure: " ++ i) ())
-                subFor = ss -> op -> match op with
-                  (oname, upkg.Out.Addressed pth) ->
-                    ss
-                      :+ ( "/nix/store/" ++ pth
-                         , upkg.upstreamPlaceholder newPath oname
-                         )
-                  _ -> ss
-                subs2 = List.foldLeft subFor subs (upkg.Drv.outputs iDrv)
-                (c2, ins :+ (Text.drop 11 newPath, outs), subs2)
+        d = Map.getOrBug b "not in closure" closure
+        step = cases (c, ins, subs), (i, outs) ->
+          if Boolean.not (affected i) then (c, ins :+ (i, outs), subs)
+          else
+            (c2, newPath) =
+              upkg.closure.rewrite closure marks targets f c i
+            iDrv = Map.getOrBug i "not in closure" closure
+            subFor = ss -> cases
+              (oname, upkg.Out.Addressed pth) ->
+                ss
+                  :+ ( "/nix/store/" ++ pth
+                     , upkg.upstreamPlaceholder newPath oname
+                     )
+              _ -> ss
+            subs2 = List.foldLeft subFor subs (upkg.Drv.outputs iDrv)
+            (c2, ins :+ (Text.drop 11 newPath, outs), subs2)
         (cache2, newIns, subs) =
           List.foldLeft step (cache, [], []) (upkg.Drv.inputDrvs d)
         swap = t -> let
           List.foldLeft
-            (s -> pr -> match pr with (o, n) -> Text.replaceAll o n s)
+            (s -> cases (o, n) -> Text.replaceAll o n s)
             t
             subs
         d1 =
           d
             |> upkg.Drv.inputDrvs.set newIns
             |> upkg.Drv.env.modify
-                 (List.map (p -> match p with (k, v) -> (k, swap v)))
+                 (List.map (cases (k, v) -> (k, swap v)))
             |> upkg.Drv.args.modify (List.map swap)
             |> upkg.Drv.attrs.modify
                  (Optional.map (upkg.json.mapText swap))
-        d2 = if List.any (t -> t Text.== b) targets then f d1 else d1
+        d2 = if Set.contains b targets then f d1 else d1
         newPath = upkg.Drv.realise (upkg.Drv.caify d2)
         printLine ("  rewrite " ++ upkg.Drv.name d ++ " -> " ++ newPath)
-        (cache2 :+ (b, newPath), newPath)
+        (Map.put b newPath cache2, newPath)
 
 -- ----------------------------------------------------------------
 -- Unison as the builder language. The build script that runs
@@ -921,7 +899,7 @@ upkg.codeOf :
 upkg.codeOf pending acc = match pending with
   [] -> acc
   link +: rest ->
-    if List.any (p -> at1 p === link) acc then upkg.codeOf rest acc
+    if List.any (cases (l, _) -> l === link) acc then upkg.codeOf rest acc
     else if Text.startsWith "##" (Link.Term.toText link) then
       upkg.codeOf rest acc
     else match Code.lookup link with
@@ -937,7 +915,7 @@ upkg.ship v =
   bytes = Value.serialize_v4 val
   pairs =
     List.map
-      (p -> match p with
+      (cases
         (l, c) -> (Value.serialize_v4 (Value.value l), Code.serialize_v3 c))
       (upkg.codeOf (Value.dependencies val) [])
   Value.serialize_v4 (Value.value (bytes, pairs))
@@ -948,7 +926,7 @@ upkg.unship b =
   (vb, pairs) = match Value.load (Value.deserialize b) with
     Left _ -> bad "unship: cannot load the envelope"
     Right e -> (e : (Bytes, [(Bytes, Bytes)]))
-  toPair = p -> match p with
+  toPair = cases
     (lb, cb) ->
       link = match Value.load (Value.deserialize lb) with
         Left _ -> bad "unship: cannot load a code link"
@@ -978,7 +956,7 @@ upkg.drvJsonU :
   Text -> Text -> [Text] -> [(Text, Text)] -> [(Text, Text)] -> [Text]
     -> Text
 upkg.drvJsonU name builder args envs depDrvs srcs =
-  inputDrv = p -> match p with
+  inputDrv = cases
     (drvPath, outNames) ->
       ( Text.drop 11 drvPath
       , Json.object
@@ -992,7 +970,7 @@ upkg.drvJsonU name builder args envs depDrvs srcs =
       , ("builder", Json.text builder)
       , ( "env"
         , Json.object
-            (List.map (p -> match p with (k, v) -> (k, Json.text v)) envs)
+            (List.map (cases (k, v) -> (k, Json.text v)) envs)
         )
       , ( "inputs"
         , Json.object
@@ -1290,34 +1268,32 @@ upkg.main = do
       !upkg.index.generate
       printLine "wrote src/nixpkgs-index.u"
     ["deep-hello"] ->
-      (rootDrv, _, _) = upkg.resolveNixpkgs "hello"
+      rootDrv = upkg.Pinned.drv (upkg.resolveNixpkgs "hello")
       printLine ("importing closure of " ++ rootDrv ++ " ...")
       closure = upkg.importClosure rootDrv
-      printLine ("  " ++ Nat.toText (List.size closure) ++ " derivations")
+      printLine ("  " ++ Nat.toText (Map.size closure) ++ " derivations")
       targets =
         List.foldLeft
-          (acc -> p -> match p with
-            (b, d) ->
-              n = upkg.Drv.name d
-              if (n Text.== "stdenv-linux")
-                || (n Text.== "stdenv-linux-no-cc")
-              then acc :+ b
-              else acc)
-          []
-          closure
+          (acc -> cases (b, d) ->
+            n = upkg.Drv.name d
+            if (n Text.== "stdenv-linux")
+              || (n Text.== "stdenv-linux-no-cc")
+            then Set.insert b acc
+            else acc)
+          Set.empty
+          (Map.toList closure)
       printLine
-        ("  targets: " ++ Nat.toText (List.size targets) ++ " stdenv drvs")
+        ("  targets: " ++ Nat.toText (Set.size targets) ++ " stdenv drvs")
       marker = "echo '>>> hello from the unison graph rewrite <<<'"
       f = d -> let
         old =
           Optional.getOrElse "" (upkg.assoc.lookup "preHook" (upkg.Drv.env d))
         upkg.Drv.setEnv "preHook" (old ++ "\n" ++ marker) d
       marks = upkg.closure.markAll closure targets
-      nAff =
-        List.size (List.filter (p -> at2 p) marks)
+      nAff = List.size (List.filter at2 (Map.toList marks))
       printLine ("  affected: " ++ Nat.toText nAff ++ " drvs to rewrite")
       (_, newRoot) =
-        upkg.closure.rewrite closure marks targets f []
+        upkg.closure.rewrite closure marks targets f Map.empty
           (Text.drop 11 rootDrv)
       printLine ("building " ++ newRoot ++ " ...")
       out =
