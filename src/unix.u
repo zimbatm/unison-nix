@@ -762,18 +762,76 @@ unix.Sh.build prog =
     { unix.Sh.dep n -> k } -> handle k (IO.getEnv ("dep_" ++ n)) with h
   handle !prog with h
 
--- A package built by Unison. entry is the codebase name of a
--- '{IO, Exception} () term (the wrapped script); realiseU compiles
--- it at realise time.
-type unix.UPkg = { name : Text, entry : Text, deps : [unix.Dep] }
+-- A package built by Unison. The build script is a first-class
+-- value, not a named term: realiseU ships the closure to the
+-- sandbox the way distributed Unison ships closures to remote
+-- nodes -- Value.serialize for the value, Code.serialize for the
+-- transitive code of its dependencies. One generic runner (see
+-- unix.Sh.runner) is compiled to bytecode once; it caches the
+-- shipped code and loads the value.
+type unix.UPkg =
+  { name : Text
+  , build : '{IO, Exception, unix.Sh} ()
+  , deps : [unix.Dep]
+  }
 
--- Compile a codebase term to bytecode and add it to the store.
--- The sandbox runs the same ucm release that compiled it.
-unix.compileEntry : Text -> {IO, Exception} Text
-unix.compileEntry entry =
-  base = ".ucm-compiled/entry-" ++ Text.replaceAll "." "-" entry
-  _ = unix.exec "ucm" ["-c", ".ucm"] ("compile " ++ entry ++ " " ++ base ++ "\n")
-  unix.chomp (unix.nix ["store", "add", "--mode", "flat", base ++ ".uc"] "")
+-- Transitive non-builtin code of a set of links. Builtins exist on
+-- both sides and their code cannot serialize, so they are skipped.
+unix.codeOf :
+  [Link.Term] -> [(Link.Term, Code)] -> {IO, Exception} [(Link.Term, Code)]
+unix.codeOf pending acc = match pending with
+  [] -> acc
+  link +: rest ->
+    if List.any (p -> at1 p === link) acc then unix.codeOf rest acc
+    else if Text.startsWith "##" (Link.Term.toText link) then
+      unix.codeOf rest acc
+    else match Code.lookup link with
+      None -> unix.codeOf rest acc
+      Some code ->
+        unix.codeOf (rest ++ Code.dependencies code) (acc :+ (link, code))
+
+-- Pack a value and the code it needs into one Bytes. The outer
+-- envelope is plain data, so it loads anywhere.
+unix.ship : a -> {IO, Exception} Bytes
+unix.ship v =
+  val = Value.value v
+  bytes = Value.serialize_v4 val
+  pairs =
+    List.map
+      (p -> match p with
+        (l, c) -> (Value.serialize_v4 (Value.value l), Code.serialize_v3 c))
+      (unix.codeOf (Value.dependencies val) [])
+  Value.serialize_v4 (Value.value (bytes, pairs))
+
+unix.unship : Bytes -> {IO, Exception} a
+unix.unship b =
+  bad = msg -> Exception.raise (Generic.failure msg ())
+  (vb, pairs) = match Value.load (Value.deserialize b) with
+    Left _ -> bad "unship: cannot load the envelope"
+    Right e -> (e : (Bytes, [(Bytes, Bytes)]))
+  toPair = p -> match p with
+    (lb, cb) ->
+      link = match Value.load (Value.deserialize lb) with
+        Left _ -> bad "unship: cannot load a code link"
+        Right l -> (l : Link.Term)
+      (link, Code.deserialize cb)
+  _ = Code.cache_ (List.map toPair pairs)
+  match Value.load (Value.deserialize vb) with
+    Left missing ->
+      bad
+        ("unship: still missing "
+          ++ Text.join ", " (List.map Link.Term.toText missing))
+    Right v -> v
+
+-- The generic sandbox entrypoint: argv is the shipped script file.
+unix.Sh.runner : '{IO, Exception} ()
+unix.Sh.runner = do
+  match !IO.getArgs with
+    [file] ->
+      script = unix.unship (readFile (FilePath file))
+      unix.Sh.build (script : '{IO, Exception, unix.Sh} ())
+    _ ->
+      Exception.raise (Generic.failure "usage: runner <script.uv>" ())
 
 -- Derivation JSON for a ucm-run builder: explicit args, env and
 -- inputs.srcs, no structured attrs (env is the API here).
@@ -815,11 +873,20 @@ unix.drvJsonU name builder args envs depDrvs srcs =
 
 unix.realiseU : unix.UPkg -> {IO, Exception} Text
 unix.realiseU up = match up with
-  unix.UPkg.UPkg name entry deps ->
+  unix.UPkg.UPkg name build deps ->
     (ucmDrv, ucmOut, ucmOutName) = unix.resolveNixpkgs "unison-ucm"
     (_, resolved) = unix.resolveDeps [] deps
-    ucPath = unix.compileEntry entry
-    printLine ("  uc " ++ entry ++ " -> " ++ ucPath)
+    runnerPath =
+      unix.chomp
+        (unix.nix
+          ["store", "add", "--mode", "flat", ".ucm-compiled/runner.uc"]
+          "")
+    scriptFile = ".ucm-compiled/script-" ++ name ++ ".uv"
+    writeFile (FilePath scriptFile) (unix.ship build)
+    uvPath =
+      unix.chomp
+        (unix.nix ["store", "add", "--mode", "flat", scriptFile] "")
+    printLine ("  script " ++ name ++ " -> " ++ uvPath)
     pathEnv =
       Text.join
         ":"
@@ -837,10 +904,10 @@ unix.realiseU up = match up with
         (unix.drvJsonU
           name
           (ucmOut ++ "/bin/ucm")
-          ["run.compiled", ucPath]
+          ["run.compiled", runnerPath, uvPath]
           envs
           depDrvs
-          [ucPath])
+          [runnerPath, uvPath])
     printLine ("  drv " ++ name ++ " -> " ++ drvPath)
     drvPath
 
@@ -926,34 +993,27 @@ pkgs.registry =
   ]
 
 -- Packages whose build scripts are Unison, not bash. The script is
--- a typed value over the Sh ability; `run.sh` updates it into the
--- codebase, realiseU compiles it to bytecode for the sandbox.
-
-pkgs.ugreeting.script : '{IO, Exception, unix.Sh} ()
-pkgs.ugreeting.script = do
-  writeFileUtf8 (FilePath unix.Sh.out) "hello from a unison builder\n"
-
-pkgs.ugreeting.main : '{IO, Exception} ()
-pkgs.ugreeting.main = do unix.Sh.build pkgs.ugreeting.script
+-- a first-class value over the Sh ability -- an inline lambda is
+-- fine. realiseU ships the closure (value + code) to the sandbox;
+-- a generic runner loads and runs it there.
 
 pkgs.ugreeting : unix.UPkg
-pkgs.ugreeting = unix.UPkg.UPkg "ugreeting" "pkgs.ugreeting.main" []
+pkgs.ugreeting =
+  unix.UPkg.UPkg
+    "ugreeting"
+    (do writeFileUtf8 (FilePath unix.Sh.out) "hello from a unison builder\n")
+    []
 
 -- GNU hello again, but the build script is Unison end to end.
-pkgs.uhello.script : '{IO, Exception, unix.Sh} ()
-pkgs.uhello.script = do
-  use unix.Sh run cd dep
-  run "tar" ["xzf", dep "hello-src"]
-  cd "hello-2.12.1"
-  run "./configure" ["--prefix=" ++ unix.Sh.out]
-  run "make" []
-  run "make" ["install"]
-
-pkgs.uhello.main : '{IO, Exception} ()
-pkgs.uhello.main = do unix.Sh.build pkgs.uhello.script
-
 pkgs.uhello : unix.UPkg
 pkgs.uhello =
+  script = do
+    use unix.Sh run cd dep
+    run "tar" ["xzf", dep "hello-src"]
+    cd "hello-2.12.1"
+    run "./configure" ["--prefix=" ++ unix.Sh.out]
+    run "make" []
+    run "make" ["install"]
   src =
     unix.Dep.Fetch
       "hello-src"
@@ -965,7 +1025,7 @@ pkgs.uhello =
       [ "bash", "coreutils", "gnugrep", "gnused", "gawk", "gnutar"
       , "gzip", "gnumake", "gcc", "gettext"
       ]
-  unix.UPkg.UPkg "uhello-2.12.1" "pkgs.uhello.main" (src +: toolchain)
+  unix.UPkg.UPkg "uhello-2.12.1" script (src +: toolchain)
 
 pkgs.uregistry : [(Text, unix.UPkg)]
 pkgs.uregistry = [("ugreeting", pkgs.ugreeting), ("uhello", pkgs.uhello)]

@@ -227,17 +227,32 @@ No bash anywhere. The bash-like dialect is the `Sh` ability
 spawns processes with inherited stdio, so `run` output lands in
 the Nix build log, prefixed with `$ ...` traces.
 
-The pipeline: the script is a term in the ucm codebase; at realise
-time the frontend compiles it to `.uc` bytecode (`ucm compile`),
-puts the bytecode in the store (`nix store add`), and emits a
-derivation whose builder is nixpkgs' own `ucm` running
-`run.compiled <script.uc>`. Dependency paths, `PATH`, and `$out`
-travel as plain env vars (`dep_<name>`), because child processes
-need `PATH` in the real environment anyway; the daemon rewrites
-the CA placeholders in env as usual.
+The build script is a first-class value — an inline lambda in the
+package definition works. Unison has no macro system; its answer
+to this kind of integration is runtime code reflection, the same
+machinery that ships closures to remote nodes in distributed
+Unison. The sandbox is treated as a remote node:
+
+- The frontend serializes the script closure (`Value.serialize`)
+  plus the transitive code of its dependencies (`Code.lookup` /
+  `Code.serialize` — builtins excluded, they exist on both sides).
+  For uhello that envelope is a few KB.
+- The envelope goes into the store (`nix store add`), next to a
+  generic runner compiled to `.uc` bytecode once.
+- The derivation's builder is nixpkgs' own `ucm` running
+  `run.compiled runner.uc <script.uv>`. The runner caches the
+  shipped code (`Code.cache_`), loads the value (`Value.load`),
+  and runs it under the `Sh` handler.
+
+Dependency paths, `PATH`, and `$out` travel as plain env vars
+(`dep_<name>`), because child processes need `PATH` in the real
+environment anyway; the daemon rewrites the CA placeholders in env
+as usual.
 
 Notably, ucm runs in the sandbox with no ceremony: no `$HOME`, no
-cache directories, no network. `run.compiled` needs none of them.
+cache directories, no network. And `Code.lookup` works inside a
+`run.compiled` binary, so the compiled frontend can harvest the
+code it needs to ship without consulting the codebase.
 
 ## How it works
 
@@ -397,3 +412,16 @@ is needed.
     dialect) handle the rest; the only gap is that base has no
     setenv, so the environment of child processes is fixed at
     derivation time (PATH comes from the drv env).
+13. Unison has no macros, but reflection covers this use case:
+    `Value.serialize` ships a closure, `Code.lookup` +
+    `Code.serialize` ship its transitive code (skip builtins:
+    their code refuses to serialize), `Code.cache_` + `Value.load`
+    revive it in another process. Ability-using closures ship
+    fine. Both builder mechanisms (named-term bytecode and shipped
+    closure) produced byte-identical outputs — CA early cutoff
+    held across the mechanism change.
+14. Gotcha: a failed `update` (e.g. after changing a record type
+    with stale generated accessors in the codebase) rewrites the
+    scratch file in place: reformatted code, the failing
+    definitions, and the original below an "ignored" marker. Keep
+    the source in git.

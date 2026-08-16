@@ -1,3 +1,92 @@
+delete.namespace probe
+delete.namespace probeser2
+delete.namespace probeser
+compile unix.Sh.runner .ucm-compiled/runner
+compile unix.test.main .ucm-compiled/test
+compile unix.main .ucm-compiled/unix
+update
+load src/unix.u
+update
+load src/unix.u
+delete.term pkgs.uhello.script
+delete.term pkgs.uhello.main
+delete.term pkgs.ugreeting.script
+delete.term pkgs.ugreeting.main
+delete.term unix.compileEntry
+delete.term unix.UPkg.entry.modify
+delete.term unix.UPkg.entry.set
+delete.term unix.UPkg.entry
+branch.delete /update-main
+switch /main
+update
+load src/unix.u
+delete.term pkgs.uhello.script
+delete.term pkgs.uhello.main
+delete.term pkgs.ugreeting.script
+delete.term pkgs.ugreeting.main
+delete.term unix.compileEntry
+delete.term unix.UPkg.entry.modify
+delete.term unix.UPkg.entry.set
+delete.term unix.UPkg.entry
+branch.delete /update-main
+switch /main
+update
+load src/unix.u
+delete.term pkgs.uhello.script
+delete.term pkgs.uhello.main
+delete.term pkgs.ugreeting.script
+delete.term pkgs.ugreeting.main
+delete.term unix.compileEntry
+delete.term unix.UPkg.entry.modify
+delete.term unix.UPkg.entry.set
+delete.term unix.UPkg.entry
+update
+load src/unix.u
+delete.term pkgs.uhello.script
+delete.term pkgs.uhello.main
+delete.term pkgs.ugreeting.script
+delete.term pkgs.ugreeting.main
+delete.term unix.compileEntry
+delete.term unix.UPkg.entry.modify
+delete.term unix.UPkg.entry.set
+delete.term unix.UPkg.entry
+update
+load src/unix.u
+branch.delete /update-main
+compile unix.Sh.runner .ucm-compiled/runner
+compile unix.test.main .ucm-compiled/test
+compile unix.main .ucm-compiled/unix
+update
+load src/unix.u
+compile probeser2.load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/p2load
+compile probeser2.save /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/p2save
+update
+load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/probeser2.u
+find Link.Term
+find Link.Term.toText
+compile probeser2.load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/p2load
+compile probeser2.save /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/p2save
+update
+load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/probeser2.u
+view reflection.Code.serialize_v3
+view reflection.Code.deserialize
+compile probeser2.load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/p2load
+compile probeser2.save /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/p2save
+add
+load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/probeser2.u
+view reflection.Code.lookup
+find reflection.Value.
+compile probeser.load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/pload
+compile probeser.save /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/psave
+add
+load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/probeser.u
+view reflection.Value.deserialize
+find Value.deserialize
+view reflection.Value.load
+find Code.
+find Value.value
+find Value.load
+find Value.serialize
 compile unix.test.main .ucm-compiled/test
 compile unix.main .ucm-compiled/unix
 update
@@ -9,46 +98,3 @@ compile pkgs.ugreeting.main .ucm-compiled/entry-pkgs-ugreeting-main
 compile unix.test.main .ucm-compiled/test
 compile unix.main .ucm-compiled/unix
 update
-load src/unix.u
-update
-load src/unix.u
-compile unix.test.main .ucm-compiled/test
-compile unix.main .ucm-compiled/unix
-update
-load src/unix.u
-find : Text -> [Text] ->{IO,Exception} Nat
-find setEnv
-find Process.call
-find getCurrentDirectory
-find setCurrentDirectory
-compile probe.builder /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/probebuilder
-add
-load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/probebuilder.u
-find Environment
-find getEnv
-compile unix.test.main .ucm-compiled/test
-compile unix.main .ucm-compiled/unix
-update
-load src/unix.u
-compile unix.main /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/unix
-update
-load src/unix.u
-update
-load src/nixpkgs-index.u
-update
-load src/nixpkgs-index.u
-update
-load src/nixpkgs-index.u
-view lib.unison_base_7_19_2.IO.FilePath
-view lib.unison_base_7_19_2.IO.FilePath.exists
-view lib.unison_base_7_19_2.IO.FilePath.writeFileUtf8
-view lib.unison_base_7_19_2.IO.FilePath.exists
-find FilePath.exists
-find writeFile
-find : Text ->{IO,Exception} Boolean
-find object.
-view lib.unison_json_1_4_2.core.Json
-find fromText
-ls lib
-find fromText
-find parse

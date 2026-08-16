@@ -30,8 +30,8 @@ cur=$(cat src/unix.u src/nixpkgs-index.u | sha256sum | cut -d' ' -f1)
 if [ ! -f "$cache/unix.uc" ] || [ "$(cat "$cache/stamp" 2>/dev/null)" != "$cur" ]; then
   echo "Compiling frontend ..." >&2
   mkdir -p "$cache"
-  out=$(printf 'load src/unix.u\nupdate\ncompile unix.main %s\ncompile unix.test.main %s\n' \
-    "$cache/unix" "$cache/test" | ucm -c .ucm 2>&1) || true
+  out=$(printf 'load src/unix.u\nupdate\ncompile unix.main %s\ncompile unix.test.main %s\ncompile unix.Sh.runner %s\n' \
+    "$cache/unix" "$cache/test" "$cache/runner" | ucm -c .ucm 2>&1) || true
   # ucm exits 0 even when the load fails; without this check, compile
   # would silently emit bytecode for the stale codebase version.
   if echo "$out" | grep -qE 'reserved keyword|I got confused|I was surprised|Typechecking failed|could not|blocked'; then
