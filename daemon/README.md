@@ -107,8 +107,11 @@ The client is complete: reads (`isValidPath`) and writes (`addToStore`,
 recursive NAR) both run from Unison against the live daemon. It is upkg's
 daemon backend -- the seam that replaces the `nix` subprocess calls. What
 each current spawn needs:
-- `nix store add` (the ship path) -> `addToStore`: directly replaceable,
-  proven (flat mode is a one-line method variant of the recursive case).
+- `nix store add` (the ship path) -> `addToStore`: **fully covered.**
+  Recursive dirs use `fixed:r:sha256` + a NAR; flat files use
+  `fixed:sha256` + raw bytes (`nixd.addToStoreFlat`). Both proven
+  byte-identical to the CLI -- a flat add over the socket returns the
+  same store path as `nix store add --mode flat`.
 - `nix derivation add` -> render the drv as ATerm (not JSON) and
   `addToStore` it as `text:sha256`; bounded serializer work.
 - `nix build ^out` -> `wopBuildPaths` + `queryPathInfo`; bounded.

@@ -151,3 +151,17 @@ nixd.addToStore sock name references fs =
   nixd.processStderr sock
   -- Response is a ValidPathInfo; its first field is the store path.
   nixd.recvStr sock
+
+-- Flat add: raw file bytes, not a NAR. Matches
+-- `nix store add --mode flat` -- exactly what upkg's ship path does
+-- for the .uv envelope and the runner bytecode.
+nixd.addToStoreFlat : Socket -> Text -> Bytes -> {IO, Exception} Text
+nixd.addToStoreFlat sock name bytes =
+  Socket.send sock (nixd.putNat 7)             -- Op::AddToStore
+  Socket.send sock (nixd.putStr name)
+  Socket.send sock (nixd.putStr "fixed:sha256") -- flat, not recursive
+  Socket.send sock (nixd.putPaths [])
+  Socket.send sock (nixd.putNat 0)             -- repair = false
+  Socket.send sock (nixd.putFramed bytes)
+  nixd.processStderr sock
+  nixd.recvStr sock

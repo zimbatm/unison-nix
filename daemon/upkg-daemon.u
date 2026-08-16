@@ -35,4 +35,10 @@ upkg.daemon.main = do
         )
       ]
   added = nixd.addToStore sock "upkg-forked-add" [] tree
-  printLine ("  added via socket: " ++ added)
+  printLine ("  added dir via socket: " ++ added)
+  -- FLAT add: exactly what the ship path does with nix store add
+  -- --mode flat for the .uv envelope and runner bytecode.
+  flat =
+    nixd.addToStoreFlat
+      sock "upkg-flat" (Text.toUtf8 "a flat file, added like ship does\n")
+  printLine ("  added flat via socket: " ++ flat)
