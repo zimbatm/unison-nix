@@ -62,7 +62,12 @@ hashes.go` + `drv_path.go`, the input-addressed store-path computation
 (`hashDerivationModulo`). Floating CA moves that into the daemon, so the
 frontend computes only two placeholder hashes.
 
-## Status
+## Status: milestone COMPLETE
+
+The daemon protocol client runs from Unison against a live nix-daemon:
+handshake + isValidPath both correct. Read path proven end to end; the
+write path (addToStore) is written from the Nix source and typechecks.
+
 - Socket builtin: **DONE and proven live.** The AF_UNIX patch compiles,
   and `socket-smoke-test.u` (builtins only) run on the patched ucm
   connects to the running nix-daemon, sends WORKER_MAGIC_1, and receives
@@ -70,13 +75,12 @@ frontend computes only two placeholder hashes.
   the real daemon. First patch attempt failed on a `SYS` import-alias
   collision (both Network.Simple.TCP and Network.Socket); fixed with a
   dedicated qualified import.
-- Full `nixd.u` (needs @unison/base + the new builtin in one codebase):
-  blocked only by a tooling-version mismatch -- the patched ucm is built
-  from unison `main` and cannot cleanly open the release-1.3.0 project
-  codebase, and `builtins.mergeio` + base collide on many suffix names.
-  The correct fix (per the workflow lesson) is to ship `unixClientSocket`
-  inside a forked @unison/base and `lib.install` it, not per-project
-  surgery. The client logic itself is validated live via proto-reference.py.
+- Full `nixd.u` client: **DONE, run live from Unison.** With base
+  installed and `unixClientSocket` merged in isolation (as `lib.sockimpl`)
+  plus a `unixConnect` wrapper, `run nixd.main` against the running daemon
+  prints `daemon protocol 294` (1.38) and `hello-2.12.3 valid? yes`, fake
+  path `valid? no`. See `live-test.md`. In a real deployment the wrapper
+  lives in a forked @unison/base and the isolation ceremony disappears.
 - Protocol client (`nixd.u`): codec + handshake + `wopIsValidPath` +
   `wopAddToStore`. **The handshake and isValidPath sequence is validated
   live against nix 2.35.1** via `proto-reference.py` (Python standing in

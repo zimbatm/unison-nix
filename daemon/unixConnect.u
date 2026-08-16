@@ -1,0 +1,12 @@
+nixd.unixConnect : Text ->{IO, Exception} Socket
+nixd.unixConnect path =
+  match lib.sockimpl path with
+    Right sock -> sock
+    Left f -> raise f
+
+nixd.main : '{IO, Exception} ()
+nixd.main = do
+  nixd.probe nixd.unixConnect
+    "/nix/store/pg2zfrrbm58ynbjshhzkgg4q466spinf-hello-2.12.3"
+  nixd.probe nixd.unixConnect
+    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hello-2.12.3"
