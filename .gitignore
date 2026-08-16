@@ -2,3 +2,4 @@
 *.output.md
 result
 scratch.u
+.ucm-compiled/

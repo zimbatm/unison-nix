@@ -84,8 +84,9 @@ plain Unison value — content-addressed, shareable through Unison
 Share like any other definition. Resolving an attr is then a pure
 lookup plus a file-exists check on the .drv. The Nix evaluator only
 runs on an index miss or after a GC. With the index, `./run.sh
-shout` drops from ~7s to ~4s, and the remainder is ucm startup, not
-Nix; `hello` no longer re-evals its ten toolchain attrs per run.
+shout` drops from ~7s to ~4s; `hello` no longer re-evals its ten
+toolchain attrs per run. (Compiling the frontend to bytecode later
+cut the remaining ucm startup too; see Layout.)
 
 ## Building from source: it works too
 
@@ -254,8 +255,11 @@ bash.
   Synced into the codebase by `run.sh`.
 - `setup.md` — UCM transcript. It creates the codebase and installs
   `@unison/base` and `@unison/json`.
-- `run.sh` — bootstraps the codebase on first run, then runs
-  `unix.main`.
+- `run.sh` — bootstraps the codebase on first run, compiles
+  `unix.main` to bytecode (cached in `.ucm-compiled/`, invalidated
+  by a source hash), then runs it with `ucm run.compiled`. That
+  skips the codebase open and the typecheck: `./run.sh shout` runs
+  in ~1.7s instead of ~4s, and `test` in ~1s.
 - `flake.nix` — dev shell with `unison-ucm`.
 
 ## Usage
@@ -344,3 +348,7 @@ is needed.
     untouched. 1.4 MB of closure JSON (599 drvs) parses in about a
     second with @unison/json. The daemon rewrites placeholders in
     `structuredAttrs` too, which makes the rewrite complete.
+11. `ucm compile` turns an entrypoint into a `.uc` bytecode file;
+    `ucm run.compiled` runs it without opening the codebase or
+    typechecking. CLI args pass through to `IO.getArgs`. This is
+    the difference between a ~4s and a ~1s frontend.

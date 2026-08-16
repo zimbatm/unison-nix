@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Bootstrap the ucm codebase on first run, then run the frontend.
+# Bootstrap the ucm codebase on first run, compile the frontend to
+# bytecode, then run it. run.compiled skips the codebase open and
+# the typecheck, so startup drops from ~4s to well under a second.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -9,7 +11,7 @@ if ! command -v ucm >/dev/null; then
 fi
 
 # Sync the generated nixpkgs index into the codebase. The index is
-# a plain Unison value; `update` makes it visible to run.file.
+# a plain Unison value; `update` makes it visible to the compiler.
 sync_index() {
   printf 'load src/nixpkgs-index.u\nupdate\n' | ucm -c .ucm >/dev/null
 }
@@ -20,10 +22,28 @@ if [ ! -d .ucm ]; then
   sync_index
 fi
 
+# Recompile when the sources change. The stamp covers both source
+# files; ./run.sh index regenerates the index file, which makes the
+# stamp stale and triggers a recompile on the next run.
+cache=.ucm-compiled
+cur=$(cat src/unix.u src/nixpkgs-index.u | sha256sum | cut -d' ' -f1)
+if [ ! -f "$cache/unix.uc" ] || [ "$(cat "$cache/stamp" 2>/dev/null)" != "$cur" ]; then
+  echo "Compiling frontend ..." >&2
+  mkdir -p "$cache"
+  out=$(printf 'load src/unix.u\nupdate\ncompile unix.main %s\ncompile unix.test.main %s\n' \
+    "$cache/unix" "$cache/test" | ucm -c .ucm 2>&1) || true
+  if [ ! -f "$cache/unix.uc" ] || [ "$cache/unix.uc" -ot src/unix.u ]; then
+    echo "$out" >&2
+    echo "compile failed" >&2
+    exit 1
+  fi
+  echo "$cur" > "$cache/stamp"
+fi
+
 case "${1:-}" in
-  test)  exec ucm -c .ucm run.file src/unix.u unix.test.main ;;
-  index) ucm -c .ucm run.file src/unix.u unix.main index
+  test)  exec ucm run.compiled "$cache/test.uc" ;;
+  index) ucm run.compiled "$cache/unix.uc" index
          sync_index
          echo "index synced into codebase" ;;
-  *)     exec ucm -c .ucm run.file src/unix.u unix.main "$@" ;;
+  *)     exec ucm run.compiled "$cache/unix.uc" "$@" ;;
 esac
