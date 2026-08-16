@@ -1,0 +1,65 @@
+-- NAR (Nix ARchive) serialization, pure. This is the format the
+-- daemon wants for wopAddToStore, and it is byte-for-byte
+-- `nix-store --dump`. Every token is the same length-prefixed,
+-- 8-byte-padded string as the worker protocol, so `nar.str` is the
+-- one primitive.
+
+type nar.Fs
+  = File Bytes Boolean       -- contents, executable?
+  | Symlink Text
+  | Dir [(Text, nar.Fs)]     -- entries; serialized sorted by name
+
+-- A length-prefixed, zero-padded-to-8 byte string (raw bytes).
+nar.bytes : Bytes -> Bytes
+nar.bytes bs =
+  n = Bytes.size bs
+  pad = Nat.mod (Nat.diff 8 (Nat.mod n 8)) 8
+  Bytes.encodeNat64le n ++ bs ++ Bytes.fromList (List.replicate pad (do 0))
+
+nar.str : Text -> Bytes
+nar.str t = nar.bytes (Text.toUtf8 t)
+
+nar.node : nar.Fs -> Bytes
+nar.node = cases
+  nar.Fs.File contents exe ->
+    nar.str "(" ++ nar.str "type" ++ nar.str "regular"
+      ++ (if exe then nar.str "executable" ++ nar.str "" else Bytes.empty)
+      ++ nar.str "contents" ++ nar.bytes contents ++ nar.str ")"
+  nar.Fs.Symlink target ->
+    nar.str "(" ++ nar.str "type" ++ nar.str "symlink"
+      ++ nar.str "target" ++ nar.str target ++ nar.str ")"
+  nar.Fs.Dir entries ->
+    sorted = List.sortBy at1 entries
+    entryBytes = cases (name, child) ->
+      nar.str "entry" ++ nar.str "(" ++ nar.str "name" ++ nar.str name
+        ++ nar.str "node" ++ nar.node child ++ nar.str ")"
+    nar.str "(" ++ nar.str "type" ++ nar.str "directory"
+      ++ List.foldLeft (Bytes.++) Bytes.empty (List.map entryBytes sorted)
+      ++ nar.str ")"
+
+nar.dump : nar.Fs -> Bytes
+nar.dump fs = nar.str "nix-archive-1" ++ nar.node fs
+
+-- The exact tree the reference dump was made from.
+nar.testTree : nar.Fs
+nar.testTree =
+  nar.Fs.Dir
+    [ ("a.txt", nar.Fs.File (Text.toUtf8 "hello\n") false)
+    , ("link", nar.Fs.Symlink "a.txt")
+    , ("run", nar.Fs.File (Text.toUtf8 "#!/bin/sh\n") true)
+    , ("sub", nar.Fs.Dir [("b", nar.Fs.File (Text.toUtf8 "deep") false)])
+    ]
+
+nar.test : '{IO, Exception} ()
+nar.test = do
+  ref =
+    readFile
+      (FilePath
+        "/tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/ref.nar")
+  got = nar.dump nar.testTree
+  if got === ref then
+    printLine ("NAR ok: " ++ Nat.toText (Bytes.size got) ++ " bytes, byte-exact")
+  else
+    printLine
+      ("NAR MISMATCH: got " ++ Nat.toText (Bytes.size got) ++ " vs ref "
+        ++ Nat.toText (Bytes.size ref))

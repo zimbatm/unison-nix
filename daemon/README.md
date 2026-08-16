@@ -42,7 +42,23 @@ Realistic staging: prove handshake + one read-only op (wopIsValidPath = 1,
 or wopQueryValidPaths). That validates the socket end-to-end without the
 NAR-serialization complexity. NAR framing is the big remaining chunk.
 
+## NAR serialization -- DONE, byte-exact
+`nar.u` serializes a typed filesystem (`File Bytes Bool | Symlink Text |
+Dir [(Text, Fs)]`) to a Nix ARchive. Verified byte-for-byte against
+`nix-store --dump` on a tree with a regular file, an executable, a
+symlink, and a nested directory (1072 bytes, identical). The key fact:
+NAR tokens use the *same* length-prefixed 8-byte-padded string framing as
+the worker protocol, so `nar.str` == `nixd.putStr`. NAR is the source for
+`wopAddToStore`, so this is the hard half of "add a derivation to the
+store over the socket."
+
 ## Status
-- Socket builtin: unixClientSocket patch applied to unison runtime, ucm
-  building.
-- This client: primitives + handshake + wopIsValidPath as the first probe.
+- Socket builtin: `unixClientSocket` patch applied to the unison runtime,
+  patched ucm building.
+- Protocol client (`nixd.u`): codec + handshake + `wopIsValidPath` probe,
+  typechecked against base; needs only the socket to run live.
+- NAR (`nar.u`): complete and byte-exact-verified against `nix-store
+  --dump`. No socket needed.
+- Remaining: wire `wopAddToStore` (name, refs, framed NAR source) and
+  `wopBuildPaths` on top of the client, then swap upkg's process spawns
+  for socket calls.
