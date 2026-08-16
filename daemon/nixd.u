@@ -1,0 +1,107 @@
+-- nix-daemon worker protocol client. Pure codec + handshake +
+-- one read-only probe (wopIsValidPath). Everything here typechecks
+-- against @unison/base as-is; only `connect` needs the new
+-- unixClientSocket builtin, so it is a parameter for now.
+
+nixd.magic1 : Nat
+nixd.magic1 = 0x6e697863
+
+nixd.magic2 : Nat
+nixd.magic2 = 0x6478696f
+
+nixd.ourVersion : Nat
+nixd.ourVersion = 0x0121  -- protocol 1.33; skips >=1.35 feature list
+
+-- u64 little-endian, matching the daemon.
+nixd.putNat : Nat -> Bytes
+nixd.putNat = Bytes.encodeNat64le
+
+-- A string: u64 length, the bytes, then zero-pad to an 8-byte
+-- boundary.
+nixd.putStr : Text -> Bytes
+nixd.putStr t =
+  bs = Text.toUtf8 t
+  n = Bytes.size bs
+  pad = Nat.mod (Nat.diff 8 (Nat.mod n 8)) 8
+  padBytes = Bytes.fromList (List.replicate pad (do 0))
+  Bytes.encodeNat64le n ++ bs ++ padBytes
+
+-- Receive exactly n bytes, looping over receiveAtMost.
+nixd.recvN : Socket -> Nat -> {IO, Exception} Bytes
+nixd.recvN sock n =
+  go = acc -> let
+    got = Bytes.size acc
+    if got >= n then Bytes.take n acc
+    else
+      chunk = Socket.receiveAtMost sock (Nat.diff n got)
+      if Bytes.size chunk == 0 then
+        Exception.raise (Generic.failure "nixd: socket closed early" ())
+      else go (acc ++ chunk)
+  go Bytes.empty
+
+nixd.recvNat : Socket -> {IO, Exception} Nat
+nixd.recvNat sock =
+  match Bytes.decodeNat64le (nixd.recvN sock 8) with
+    Some (n, _) -> n
+    None -> Exception.raise (Generic.failure "nixd: short read" ())
+
+nixd.recvStr : Socket -> {IO, Exception} Text
+nixd.recvStr sock =
+  n = nixd.recvNat sock
+  bs = nixd.recvN sock n
+  pad = Nat.mod (Nat.diff 8 (Nat.mod n 8)) 8
+  _ = if pad > 0 then nixd.recvN sock pad else Bytes.empty
+  Text.fromUtf8 bs
+
+-- STDERR_LAST = 0x616c7473 ; STDERR_ERROR = 0x63787470.
+-- The daemon interleaves log messages before each reply; drain
+-- them until LAST, raising on ERROR.
+nixd.processStderr : Socket -> {IO, Exception} ()
+nixd.processStderr sock =
+  loop = do
+    tag = nixd.recvNat sock
+    if tag == 0x616c7473 then ()          -- LAST
+    else if tag == 0x63787470 then         -- ERROR
+      msg = nixd.recvStr sock
+      Exception.raise (Generic.failure ("nixd error: " ++ msg) ())
+    else if tag == 0x6f6c6d67 then         -- NEXT: a log line
+      _ = nixd.recvStr sock
+      !loop
+    else                                    -- START/STOP/RESULT: skip fields
+      _ = nixd.recvStr sock
+      !loop
+  !loop
+
+-- Handshake, then return the negotiated daemon version.
+nixd.handshake : Socket -> {IO, Exception} Nat
+nixd.handshake sock =
+  Socket.send sock (nixd.putNat nixd.magic1)
+  m2 = nixd.recvNat sock
+  if Nat.eq m2 nixd.magic2 |> not then
+    Exception.raise (Generic.failure "nixd: bad magic from daemon" ())
+  else
+    daemonV = nixd.recvNat sock
+    Socket.send sock (nixd.putNat nixd.ourVersion)
+    -- >=1.14: obsolete cpu-affinity nat; >=1.11: reserve-space flag
+    Socket.send sock (nixd.putNat 0)
+    Socket.send sock (nixd.putNat 0)
+    nixd.processStderr sock
+    daemonV
+
+-- wopIsValidPath = 1. The end-to-end probe: does the store have
+-- this path? Proves framing without NAR serialization.
+nixd.isValidPath : Socket -> Text -> {IO, Exception} Boolean
+nixd.isValidPath sock path =
+  Socket.send sock (nixd.putNat 1)
+  Socket.send sock (nixd.putStr path)
+  nixd.processStderr sock
+  Nat.gt (nixd.recvNat sock) 0
+
+-- The whole probe, parameterised on connect (= unixClientSocket).
+nixd.probe : (Text -> {IO, Exception} Socket) -> Text -> {IO, Exception} ()
+nixd.probe connect storePath =
+  sock = connect "/nix/var/nix/daemon-socket/socket"
+  v = nixd.handshake sock
+  printLine ("daemon protocol " ++ Nat.toText v)
+  ok = nixd.isValidPath sock storePath
+  printLine (storePath ++ " valid? " ++ (if ok then "yes" else "no"))

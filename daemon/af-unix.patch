@@ -1,0 +1,58 @@
+diff --git a/parser-typechecker/src/Unison/Builtin.hs b/parser-typechecker/src/Unison/Builtin.hs
+index aa10785..892193c 100644
+--- a/parser-typechecker/src/Unison/Builtin.hs
++++ b/parser-typechecker/src/Unison/Builtin.hs
+@@ -1079,6 +1079,7 @@ ioBuiltins =
+     ("IO.serverSocket.impl.v3", optionalt text --> text --> iof socket),
+     ("IO.listen.impl.v3", socket --> iof unit),
+     ("IO.clientSocket.impl.v3", text --> text --> iof socket),
++    ("IO.unixClientSocket.impl.v1", text --> iof socket),
+     ("IO.UDP.clientSocket.impl.v1", text --> text --> iof udpSocket),
+     ("IO.UDP.ClientSockAddr.toText.v1", udpClientSockAddr --> text),
+     ("IO.UDP.UDPSocket.toText.impl.v1", udpSocket --> text),
+diff --git a/unison-runtime/src/Unison/Runtime/Builtin.hs b/unison-runtime/src/Unison/Runtime/Builtin.hs
+index daee763..a1179c1 100644
+--- a/unison-runtime/src/Unison/Runtime/Builtin.hs
++++ b/unison-runtime/src/Unison/Runtime/Builtin.hs
+@@ -1560,6 +1560,8 @@ declareForeigns = do
+   declareForeign Tracked 1 FFI_ForeignPtr_Float32_allocate
+   declareForeign Tracked 1 FFI_ForeignPtr_Float_allocate
+ 
++  declareForeign Tracked 1 IO_UnixClientSocket_impl_v1
++
+ foreignDeclResults ::
+   (Map ForeignFunc (Sandbox, SuperNormal Reference Symbol))
+ foreignDeclResults =
+diff --git a/unison-runtime/src/Unison/Runtime/Foreign/Function.hs b/unison-runtime/src/Unison/Runtime/Foreign/Function.hs
+index fcf0e69..329f83b 100644
+--- a/unison-runtime/src/Unison/Runtime/Foreign/Function.hs
++++ b/unison-runtime/src/Unison/Runtime/Foreign/Function.hs
+@@ -368,6 +368,11 @@ foreignCallHelper = \case
+          port
+          ) ->
+           fst <$> SYS.bindSock (hostPreference mhst) port
++  IO_UnixClientSocket_impl_v1 -> mkForeignIOF $
++    \(path :: Util.Text.Text) -> do
++      sock <- SYS.socket SYS.AF_UNIX SYS.Stream SYS.defaultProtocol
++      SYS.connect sock (SYS.SockAddrUnix (Util.Text.unpack path))
++      pure sock
+   Socket_toText -> mkForeign $
+     \(sock :: Socket) -> pure $ show sock
+   Handle_toText -> mkForeign $
+diff --git a/unison-runtime/src/Unison/Runtime/Foreign/Function/Type.hs b/unison-runtime/src/Unison/Runtime/Foreign/Function/Type.hs
+index 9c77287..5d4f99b 100644
+--- a/unison-runtime/src/Unison/Runtime/Foreign/Function/Type.hs
++++ b/unison-runtime/src/Unison/Runtime/Foreign/Function/Type.hs
+@@ -472,6 +472,7 @@ data ForeignFunc
+   | FFI_ForeignPtr_Float32_allocate
+   | FFI_ForeignPtr_Float_allocate
+   | FFI_ForeignPtr_Ptr_allocate
++  | IO_UnixClientSocket_impl_v1
+   deriving (Show, Eq, Ord, Enum, Bounded)
+ 
+ foreignFuncBuiltinName :: ForeignFunc -> Text
+@@ -940,3 +941,4 @@ foreignFuncBuiltinName = \case
+   FFI_ForeignPtr_Float32_allocate -> "FFI.ForeignPtr.Float32.allocate"
+   FFI_ForeignPtr_Float_allocate -> "FFI.ForeignPtr.Float.allocate"
+   FFI_ForeignPtr_Ptr_allocate -> "FFI.ForeignPtr.Ptr.allocate"
++  IO_UnixClientSocket_impl_v1 -> "IO.unixClientSocket.impl.v1"
