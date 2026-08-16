@@ -8,6 +8,7 @@ nixpkgs.index : [(Text, Text, Text, Text)]
 nixpkgs.index =
   [ ("bash", "/nix/store/8wf253v4xmm0d42gw7msj9pwi8yp6l3i-bash-interactive-5.3p9.drv", "/nix/store/bbzjxfam8vv1nyikn5dsrazsw4ya5vzx-bash-interactive-5.3p9", "out")
   , ("cacert", "/nix/store/ydmfwhdryvagi1vsyayhsfqisgl65xzi-nss-cacert-3.125.drv", "/nix/store/8pzhla2fz926ir6kjlgqnfrz34bjsjl0-nss-cacert-3.125", "out")
+  , ("cargo", "/nix/store/5dbpy9dyrf4jhmpi99dsz1h2fh2ps9by-cargo-1.96.1.drv", "/nix/store/wjqh444sdwagpwyw25wdhk9rxl77rn6c-cargo-1.96.1", "out")
   , ("coreutils", "/nix/store/nvmwza7ls167mw3j9fd60h009nwb5c17-coreutils-9.11.drv", "/nix/store/cp7wjv1pl4wapfk48svvizxd089v9h0a-coreutils-9.11", "out")
   , ("curl", "/nix/store/y0w0b4xy7vp4v777yh6pnkjlf5qp6319-curl-8.21.0.drv", "/nix/store/p4j27d0562xma7y3hpls2lm6v20sbfcv-curl-8.21.0-bin", "bin")
   , ("gawk", "/nix/store/klqv2jjh181lrrmfxxxc97fwxf9smxxh-gawk-5.4.0.drv", "/nix/store/cb4h2p8j9m45riqawxlfndpz4arlv4rs-gawk-5.4.0", "out")
@@ -20,5 +21,6 @@ nixpkgs.index =
   , ("gzip", "/nix/store/0m3pli39g64nybmr865xx7wfxg1fa5mv-gzip-1.14.drv", "/nix/store/ljxnca2bb04vlrhivnl7j7p1ph9xz4sg-gzip-1.14", "out")
   , ("hello", "/nix/store/vvjw1pyn64q08yfil2z8mdaqdhz7skqh-hello-2.12.3.drv", "/nix/store/pg2zfrrbm58ynbjshhzkgg4q466spinf-hello-2.12.3", "out")
   , ("nginx", "/nix/store/sccnwq97sr825b9l380w6aycqlsfxkin-nginx-1.30.4.drv", "/nix/store/6vv2nw59iv0vs95dw4yyrka7dm7xfgll-nginx-1.30.4", "out")
+  , ("rustc", "/nix/store/z7zrwhh6djzn0qfi8hsi0plk18aisb0p-rustc-wrapper-1.96.1.drv", "/nix/store/8qpzf385bdb0dgzz85dvb1lfvf2fxipk-rustc-wrapper-1.96.1", "out")
   , ("unison-ucm", "/nix/store/fiz1268rs9a782d5xxa5kkpgz9pkf1fb-unison-code-manager-1.3.0.drv", "/nix/store/60gsb926ymc2zkf0s7v35c4qlzqx0m5k-unison-code-manager-1.3.0", "out")
   ]

@@ -4,6 +4,21 @@ compile upkg.main .ucm-compiled/upkg
 update
 load src/upkg.u
 update
+load src/nixpkgs-index.u
+compile upkg.Sh.runner .ucm-compiled/runner
+compile upkg.test.main .ucm-compiled/test
+compile upkg.main .ucm-compiled/upkg
+update
+load src/upkg.u
+find Bytes.fromBase
+find toBase64
+find fromHex
+compile upkg.Sh.runner .ucm-compiled/runner
+compile upkg.test.main .ucm-compiled/test
+compile upkg.main .ucm-compiled/upkg
+update
+load src/upkg.u
+update
 load src/upkg.u
 delete.term upkg.realise.go
 delete.term upkg.resolveDeps
@@ -83,18 +98,3 @@ load src/nixpkgs-index.u
 compile unix.Sh.runner .ucm-compiled/runner
 compile unix.test.main .ucm-compiled/test
 compile unix.main .ucm-compiled/unix
-update
-load src/unix.u
-delete.namespace probe
-delete.namespace probeser2
-delete.namespace probeser
-compile unix.Sh.runner .ucm-compiled/runner
-compile unix.test.main .ucm-compiled/test
-compile unix.main .ucm-compiled/unix
-update
-load src/unix.u
-update
-load src/unix.u
-delete.term pkgs.uhello.script
-delete.term pkgs.uhello.main
-delete.term pkgs.ugreeting.script

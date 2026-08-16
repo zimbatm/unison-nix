@@ -415,7 +415,10 @@ The spike already built the bridges, in increasing independence:
 
 1. Speak the daemon protocol directly (drop process spawning).
 2. Trivial-builder vocabulary + `Normalizer` library.
-3. Cargo ecosystem end-to-end (parse/plan/fetch/assemble/verify).
+3. Cargo ecosystem end-to-end (parse/plan/fetch/assemble/verify) —
+   **done in the spike**: `./run.sh hexyl` builds hexyl 0.16.0 from its
+   Cargo.lock, 67 per-crate FODs with lockfile-supplied hashes, vendor
+   assembly by a Unison closure, offline cargo build.
 4. The claims store prototype on Unison Share.
 5. `rebind` (typed graft) with CA cutoff measurement on a real CVE scenario.
 6. A curated namespace with a release-blocking test aggregate, even if tiny.

@@ -269,6 +269,37 @@ cache directories, no network. And `Code.lookup` works inside a
 `run.compiled` binary, so the compiled frontend can harvest the
 code it needs to ship without consulting the codebase.
 
+## A real ecosystem: Cargo end to end
+
+```
+$ ./run.sh hexyl
+realising hexyl (cargo, unison builder) ...
+  drv hexyl-src -> ...
+  drv aho-corasick-1.1.3 -> ...   (67 crate FODs, hashes from the lockfile)
+  drv hexyl-0.16.0 -> /nix/store/nd4va8p5...-hexyl-0.16.0.drv
+building ...
+out: /nix/store/xa73a81k...-hexyl-0.16.0
+
+$ .../bin/hexyl --version
+hexyl 0.16.0
+```
+
+This is the lockfile pattern from PROPOSAL.md §5.2, implemented:
+
+- `upkg.cargo.parseLock` parses the committed `Cargo.lock` (a
+  minimal TOML-subset parser, pure).
+- Every registry crate becomes a fixed-output derivation whose
+  SRI hash is converted straight from the lockfile checksum —
+  **zero hashes for a human to maintain**, and each crate is one
+  store path shared by any package that uses it.
+- The build closure (Unison, not bash) unpacks the source,
+  assembles the vendor tree with `.cargo-checksum.json` stubs and
+  a source-replacement `config.toml`, and runs
+  `cargo build --release --offline --locked`.
+
+One wrinkle: Unison base has no setenv, so `CARGO_HOME` is passed
+by spawning through coreutils' `env(1)`.
+
 ## Configuration across stages: one value, three bind times
 
 `./run.sh nginx` builds an nginx server from one typed record:
@@ -394,6 +425,7 @@ nix develop          # or: nix shell nixpkgs#unison-ucm
 ./run.sh banner      # build a package with a dependency
 ./run.sh shout       # build a package with nixpkgs dependencies
 ./run.sh hello       # compile GNU hello from the upstream tarball
+./run.sh hexyl       # build a real Rust tool from its Cargo.lock
 ./run.sh uni-hello   # override nixpkgs hello with a pure function
 ./run.sh deep-hello  # override stdenv, rewrite the closure
 ./run.sh ugreeting   # build with a Unison build script
