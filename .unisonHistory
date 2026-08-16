@@ -2,6 +2,34 @@ compile unix.test.main .ucm-compiled/test
 compile unix.main .ucm-compiled/unix
 update
 load src/unix.u
+update
+load src/nixpkgs-index.u
+compile pkgs.uhello.main .ucm-compiled/entry-pkgs-uhello-main
+compile pkgs.ugreeting.main .ucm-compiled/entry-pkgs-ugreeting-main
+compile unix.test.main .ucm-compiled/test
+compile unix.main .ucm-compiled/unix
+update
+load src/unix.u
+update
+load src/unix.u
+compile unix.test.main .ucm-compiled/test
+compile unix.main .ucm-compiled/unix
+update
+load src/unix.u
+find : Text -> [Text] ->{IO,Exception} Nat
+find setEnv
+find Process.call
+find getCurrentDirectory
+find setCurrentDirectory
+compile probe.builder /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/probebuilder
+add
+load /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/probebuilder.u
+find Environment
+find getEnv
+compile unix.test.main .ucm-compiled/test
+compile unix.main .ucm-compiled/unix
+update
+load src/unix.u
 compile unix.main /tmp/claude-1000/-home-zimbatm-unison-nix/f5b32a47-bd53-41e8-a632-79607c1bf9bf/scratchpad/unix
 update
 load src/unix.u

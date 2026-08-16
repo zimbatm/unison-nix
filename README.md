@@ -206,6 +206,39 @@ Two findings fell out:
   hash-determined output path, so downstream literal references
   stay valid with no substitution.
 
+## Unison as the builder language
+
+The build script that runs *inside* the sandbox can be Unison too.
+`./run.sh uhello` compiles GNU hello with this build script:
+
+```unison
+pkgs.uhello.script : '{IO, Exception, unix.Sh} ()
+pkgs.uhello.script = do
+  use unix.Sh run cd dep
+  run "tar" ["xzf", dep "hello-src"]
+  cd "hello-2.12.1"
+  run "./configure" ["--prefix=" ++ unix.Sh.out]
+  run "make" []
+  run "make" ["install"]
+```
+
+No bash anywhere. The bash-like dialect is the `Sh` ability
+(`run`, `cd`, `out`, `dep`); its handler runs in the sandbox and
+spawns processes with inherited stdio, so `run` output lands in
+the Nix build log, prefixed with `$ ...` traces.
+
+The pipeline: the script is a term in the ucm codebase; at realise
+time the frontend compiles it to `.uc` bytecode (`ucm compile`),
+puts the bytecode in the store (`nix store add`), and emits a
+derivation whose builder is nixpkgs' own `ucm` running
+`run.compiled <script.uc>`. Dependency paths, `PATH`, and `$out`
+travel as plain env vars (`dep_<name>`), because child processes
+need `PATH` in the real environment anyway; the daemon rewrites
+the CA placeholders in env as usual.
+
+Notably, ucm runs in the sandbox with no ceremony: no `$HOME`, no
+cache directories, no network. `run.compiled` needs none of them.
+
 ## How it works
 
 ```
@@ -273,6 +306,8 @@ nix develop          # or: nix shell nixpkgs#unison-ucm
 ./run.sh hello       # compile GNU hello from the upstream tarball
 ./run.sh uni-hello   # override nixpkgs hello with a pure function
 ./run.sh deep-hello  # override stdenv, rewrite the closure
+./run.sh ugreeting   # build with a Unison build script
+./run.sh uhello      # compile GNU hello with a Unison build script
 ./run.sh index       # regenerate the pinned nixpkgs index
 ```
 
@@ -303,7 +338,10 @@ is needed.
   to one `nix eval` each. The index records the local .drv path but
   not how to refetch it, so after a GC the fallback re-evals.
 - The build script DSL (`@dep@` substitution) is a placeholder for a
-  real typed builder API.
+  real typed builder API. The `Sh` ability is the start of that API;
+  it covers `run`/`cd`/`out`/`dep` and nothing else yet. Unison base
+  has no setenv, so a build script cannot change the environment of
+  child processes at runtime; env is fixed at derivation time.
 - A deep override rebuilds every affected drv from source: a
   CA-ified drv can never match the original input-addressed build
   in the cache, even when the output would be byte-identical. Early
@@ -352,3 +390,10 @@ is needed.
     `ucm run.compiled` runs it without opening the codebase or
     typechecking. CLI args pass through to `IO.getArgs`. This is
     the difference between a ~4s and a ~1s frontend.
+12. ucm works as a Nix sandbox builder out of the box:
+    `run.compiled` needs no `$HOME`, no cache, no network. A
+    17 KB `.uc` file in `inputs.srcs` plus nixpkgs' `unison-ucm`
+    replaces bash as the builder. Build-script abilities (the `Sh`
+    dialect) handle the rest; the only gap is that base has no
+    setenv, so the environment of child processes is fixed at
+    derivation time (PATH comes from the drv env).

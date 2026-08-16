@@ -32,6 +32,13 @@ if [ ! -f "$cache/unix.uc" ] || [ "$(cat "$cache/stamp" 2>/dev/null)" != "$cur" 
   mkdir -p "$cache"
   out=$(printf 'load src/unix.u\nupdate\ncompile unix.main %s\ncompile unix.test.main %s\n' \
     "$cache/unix" "$cache/test" | ucm -c .ucm 2>&1) || true
+  # ucm exits 0 even when the load fails; without this check, compile
+  # would silently emit bytecode for the stale codebase version.
+  if echo "$out" | grep -qE 'reserved keyword|I got confused|I was surprised|Typechecking failed|could not|blocked'; then
+    echo "$out" >&2
+    echo "compile failed: src/unix.u has errors" >&2
+    exit 1
+  fi
   if [ ! -f "$cache/unix.uc" ] || [ "$cache/unix.uc" -ot src/unix.u ]; then
     echo "$out" >&2
     echo "compile failed" >&2

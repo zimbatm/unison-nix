@@ -19,4 +19,5 @@ nixpkgs.index =
   , ("gnutar", "/nix/store/akw9mw57mgbly9fmshv6bybngwaliyx3-gnutar-1.35.drv", "/nix/store/8rwjhfjqfgdlvjy60kr98jyw67rfnabv-gnutar-1.35", "out")
   , ("gzip", "/nix/store/0m3pli39g64nybmr865xx7wfxg1fa5mv-gzip-1.14.drv", "/nix/store/ljxnca2bb04vlrhivnl7j7p1ph9xz4sg-gzip-1.14", "out")
   , ("hello", "/nix/store/vvjw1pyn64q08yfil2z8mdaqdhz7skqh-hello-2.12.3.drv", "/nix/store/pg2zfrrbm58ynbjshhzkgg4q466spinf-hello-2.12.3", "out")
+  , ("unison-ucm", "/nix/store/fiz1268rs9a782d5xxa5kkpgz9pkf1fb-unison-code-manager-1.3.0.drv", "/nix/store/60gsb926ymc2zkf0s7v35c4qlzqx0m5k-unison-code-manager-1.3.0", "out")
   ]

@@ -263,6 +263,7 @@ unix.index.attrs : [Text]
 unix.index.attrs =
   [ "bash", "cacert", "coreutils", "curl", "gawk", "gcc", "gettext"
   , "gnugrep", "gnumake", "gnused", "gnutar", "gzip", "hello"
+  , "unison-ucm"
   ]
 
 unix.index.generate : '{IO, Exception} ()
@@ -354,6 +355,30 @@ unix.assoc.lookup k xs = match xs with
 unix.realise : unix.Pkg -> {IO, Exception} Text
 unix.realise pkg = at2 (unix.realise.go [] pkg)
 
+-- Resolve a dep list to (name, drvPath, outputName, substText)
+-- tuples. Local deps realise recursively (cache threads through);
+-- their substText is an upstream placeholder. Nixpkgs and Fetch
+-- deps have literal paths.
+unix.resolveDeps :
+  [(Text, Text)] -> [unix.Dep]
+    -> {IO, Exception} ([(Text, Text)], [(Text, Text, Text, Text)])
+unix.resolveDeps cache deps =
+  step = acc -> dep -> match acc with
+    (c, resolved) -> match dep with
+      unix.Dep.Local p ->
+        (c2, drvPath) = unix.realise.go c p
+        sub = unix.upstreamPlaceholder drvPath "out"
+        (c2, resolved :+ (unix.Pkg.name p, drvPath, "out", sub))
+      unix.Dep.Nixpkgs attr ->
+        (drvPath, outPath, outName) = unix.resolveNixpkgs attr
+        printLine ("  nixpkgs " ++ attr ++ " -> " ++ drvPath)
+        (c, resolved :+ (attr, drvPath, outName, outPath))
+      unix.Dep.Fetch fname url sri ->
+        (drvPath, outPath) = unix.fetch fname url sri
+        printLine ("  fetch " ++ fname ++ " -> " ++ drvPath)
+        (c, resolved :+ (fname, drvPath, "out", outPath))
+  List.foldLeft step (cache, []) deps
+
 unix.realise.go :
   [(Text, Text)] -> unix.Pkg -> {IO, Exception} ([(Text, Text)], Text)
 unix.realise.go cache pkg = match pkg with
@@ -361,21 +386,7 @@ unix.realise.go cache pkg = match pkg with
     match unix.assoc.lookup name cache with
       Some path -> (cache, path)
       None ->
-        step = acc -> dep -> match acc with
-          (c, resolved) -> match dep with
-            unix.Dep.Local p ->
-              (c2, drvPath) = unix.realise.go c p
-              sub = unix.upstreamPlaceholder drvPath "out"
-              (c2, resolved :+ (unix.Pkg.name p, drvPath, "out", sub))
-            unix.Dep.Nixpkgs attr ->
-              (drvPath, outPath, outName) = unix.resolveNixpkgs attr
-              printLine ("  nixpkgs " ++ attr ++ " -> " ++ drvPath)
-              (c, resolved :+ (attr, drvPath, outName, outPath))
-            unix.Dep.Fetch fname url sri ->
-              (drvPath, outPath) = unix.fetch fname url sri
-              printLine ("  fetch " ++ fname ++ " -> " ++ drvPath)
-              (c, resolved :+ (fname, drvPath, "out", outPath))
-        (cache2, resolvedDeps) = List.foldLeft step (cache, []) deps
+        (cache2, resolvedDeps) = unix.resolveDeps cache deps
         subst = s -> info -> match info with
           (depName, _, _, sub) ->
             Text.replaceAll ("@" ++ depName ++ "@") sub s
@@ -712,6 +723,128 @@ unix.closure.rewrite closure marks targets f cache b =
         (cache2 :+ (b, newPath), newPath)
 
 -- ----------------------------------------------------------------
+-- Unison as the builder language. The build script that runs
+-- inside the sandbox is Unison too: compiled to .uc bytecode on
+-- the host, added to the store, executed by nixpkgs' ucm with
+-- `run.compiled`. The bash-like dialect is the Sh ability; its
+-- handler runs in the sandbox with inherited stdio, so `run`
+-- output lands in the build log.
+--
+-- Dependency paths and $out travel as plain env vars (PATH,
+-- dep_<name>, out), because child processes need PATH in the real
+-- environment anyway. The daemon rewrites the placeholders in env
+-- like everywhere else.
+
+ability unix.Sh where
+  run : Text -> [Text] -> ()
+  cd : Text -> ()
+  out : Text
+  dep : Text -> Text
+
+unix.Sh.build : '{IO, Exception, unix.Sh} a -> {IO, Exception} a
+unix.Sh.build prog =
+  h = cases
+    { r } -> r
+    { unix.Sh.run cmd args -> k } ->
+      printLine ("$ " ++ cmd ++ " " ++ Text.join " " args)
+      code = IO.Process.call cmd args
+      match code with
+        0 -> handle k () with h
+        _ ->
+          Exception.raise
+            (Generic.failure
+              (cmd ++ " failed with exit code " ++ Nat.toText code)
+              ())
+    { unix.Sh.cd p -> k } ->
+      FilePath.setCurrentDirectory (FilePath p)
+      handle k () with h
+    { unix.Sh.out -> k } -> handle k (IO.getEnv "out") with h
+    { unix.Sh.dep n -> k } -> handle k (IO.getEnv ("dep_" ++ n)) with h
+  handle !prog with h
+
+-- A package built by Unison. entry is the codebase name of a
+-- '{IO, Exception} () term (the wrapped script); realiseU compiles
+-- it at realise time.
+type unix.UPkg = { name : Text, entry : Text, deps : [unix.Dep] }
+
+-- Compile a codebase term to bytecode and add it to the store.
+-- The sandbox runs the same ucm release that compiled it.
+unix.compileEntry : Text -> {IO, Exception} Text
+unix.compileEntry entry =
+  base = ".ucm-compiled/entry-" ++ Text.replaceAll "." "-" entry
+  _ = unix.exec "ucm" ["-c", ".ucm"] ("compile " ++ entry ++ " " ++ base ++ "\n")
+  unix.chomp (unix.nix ["store", "add", "--mode", "flat", base ++ ".uc"] "")
+
+-- Derivation JSON for a ucm-run builder: explicit args, env and
+-- inputs.srcs, no structured attrs (env is the API here).
+unix.drvJsonU :
+  Text -> Text -> [Text] -> [(Text, Text)] -> [(Text, Text)] -> [Text]
+    -> Text
+unix.drvJsonU name builder args envs depDrvs srcs =
+  inputDrv = p -> match p with
+    (drvPath, outNames) ->
+      ( Text.drop 11 drvPath
+      , Json.object
+          [ ("dynamicOutputs", Json.object [])
+          , ("outputs", Json.array (List.map Json.text outNames))
+          ]
+      )
+  Json.toText
+    (Json.object
+      [ ("args", Json.array (List.map Json.text args))
+      , ("builder", Json.text builder)
+      , ( "env"
+        , Json.object
+            (List.map (p -> match p with (k, v) -> (k, Json.text v)) envs)
+        )
+      , ( "inputs"
+        , Json.object
+            [ ( "drvs"
+              , Json.object (List.map inputDrv (unix.groupDeps depDrvs))
+              )
+            , ( "srcs"
+              , Json.array (List.map (s -> Json.text (Text.drop 11 s)) srcs)
+              )
+            ]
+        )
+      , ("name", Json.text name)
+      , ("outputs", unix.caOutputs)
+      , ("system", Json.text unix.system)
+      , ("version", Json.nat 4)
+      ])
+
+unix.realiseU : unix.UPkg -> {IO, Exception} Text
+unix.realiseU up = match up with
+  unix.UPkg.UPkg name entry deps ->
+    (ucmDrv, ucmOut, ucmOutName) = unix.resolveNixpkgs "unison-ucm"
+    (_, resolved) = unix.resolveDeps [] deps
+    ucPath = unix.compileEntry entry
+    printLine ("  uc " ++ entry ++ " -> " ++ ucPath)
+    pathEnv =
+      Text.join
+        ":"
+        (List.map (i -> match i with (_, _, _, sub) -> sub ++ "/bin") resolved)
+    depEnvs =
+      List.map
+        (i -> match i with (n, _, _, sub) -> ("dep_" ++ n, sub))
+        resolved
+    envs =
+      [("PATH", pathEnv), ("out", unix.placeholder "out")] ++ depEnvs
+    depDrv = i -> match i with (_, drvPath, outName, _) -> (drvPath, outName)
+    depDrvs = List.map depDrv resolved :+ (ucmDrv, ucmOutName)
+    drvPath =
+      unix.addDrv
+        (unix.drvJsonU
+          name
+          (ucmOut ++ "/bin/ucm")
+          ["run.compiled", ucPath]
+          envs
+          depDrvs
+          [ucPath])
+    printLine ("  drv " ++ name ++ " -> " ++ drvPath)
+    drvPath
+
+-- ----------------------------------------------------------------
 -- A tiny package set.
 
 pkgs.greeting : unix.Pkg
@@ -791,6 +924,51 @@ pkgs.registry =
   , ("shout", pkgs.shout)
   , ("hello", pkgs.gnuhello)
   ]
+
+-- Packages whose build scripts are Unison, not bash. The script is
+-- a typed value over the Sh ability; `run.sh` updates it into the
+-- codebase, realiseU compiles it to bytecode for the sandbox.
+
+pkgs.ugreeting.script : '{IO, Exception, unix.Sh} ()
+pkgs.ugreeting.script = do
+  writeFileUtf8 (FilePath unix.Sh.out) "hello from a unison builder\n"
+
+pkgs.ugreeting.main : '{IO, Exception} ()
+pkgs.ugreeting.main = do unix.Sh.build pkgs.ugreeting.script
+
+pkgs.ugreeting : unix.UPkg
+pkgs.ugreeting = unix.UPkg.UPkg "ugreeting" "pkgs.ugreeting.main" []
+
+-- GNU hello again, but the build script is Unison end to end.
+pkgs.uhello.script : '{IO, Exception, unix.Sh} ()
+pkgs.uhello.script = do
+  use unix.Sh run cd dep
+  run "tar" ["xzf", dep "hello-src"]
+  cd "hello-2.12.1"
+  run "./configure" ["--prefix=" ++ unix.Sh.out]
+  run "make" []
+  run "make" ["install"]
+
+pkgs.uhello.main : '{IO, Exception} ()
+pkgs.uhello.main = do unix.Sh.build pkgs.uhello.script
+
+pkgs.uhello : unix.UPkg
+pkgs.uhello =
+  src =
+    unix.Dep.Fetch
+      "hello-src"
+      "https://ftp.gnu.org/gnu/hello/hello-2.12.1.tar.gz"
+      "sha256-jZkUKv2SV28wsM18tCqNxoCZmLxdYH2Idh9RLibH2yA="
+  toolchain =
+    List.map
+      unix.Dep.Nixpkgs
+      [ "bash", "coreutils", "gnugrep", "gnused", "gawk", "gnutar"
+      , "gzip", "gnumake", "gcc", "gettext"
+      ]
+  unix.UPkg.UPkg "uhello-2.12.1" "pkgs.uhello.main" (src +: toolchain)
+
+pkgs.uregistry : [(Text, unix.UPkg)]
+pkgs.uregistry = [("ugreeting", pkgs.ugreeting), ("uhello", pkgs.uhello)]
 
 -- ----------------------------------------------------------------
 -- Entry points.
@@ -878,8 +1056,22 @@ unix.main = do
               ["build", "--no-link", "--print-out-paths", drv ++ "^out"]
               ""
           printLine ("out: " ++ unix.chomp out)
-        None ->
-          printLine
-            ("unknown package: " ++ pkgName ++ " (known: "
-              ++ Text.join ", " (List.map at1 pkgs.registry) ++ ")")
+        None -> match unix.assoc.lookup pkgName pkgs.uregistry with
+          Some up ->
+            printLine ("realising " ++ pkgName ++ " (unison builder) ...")
+            drv = unix.realiseU up
+            printLine ("building " ++ drv ++ " ...")
+            out =
+              unix.nix
+                ["build", "--no-link", "--print-out-paths", drv ++ "^out"]
+                ""
+            printLine ("out: " ++ unix.chomp out)
+          None ->
+            printLine
+              ("unknown package: " ++ pkgName ++ " (known: "
+                ++ Text.join
+                    ", "
+                    (List.map at1 pkgs.registry
+                      ++ List.map at1 pkgs.uregistry)
+                ++ ")")
     _ -> printLine "usage: unix <package>"
