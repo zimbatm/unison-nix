@@ -352,8 +352,162 @@ unix.assoc.lookup k xs = match xs with
 --
 -- A resolved dep is (name, drvPath, outputName, substText).
 
+-- ----------------------------------------------------------------
+-- Pure planning / effectful submission. `plan` computes the whole
+-- build graph with no IO ability -- the typechecker proves that
+-- evaluation has no side effects, which is the guarantee Nix's
+-- pure-eval mode gives by prohibition. Since the daemon computes
+-- all store paths, planned nodes reference each other symbolically;
+-- `submit` resolves the references as drv paths become known.
+
+-- A store reference in a plan: a path known at plan time (from the
+-- pinned index), or the drv path / output of a planned node.
+type unix.Ref = Path Text | Drv Text | Output Text
+
+type unix.Node =
+  { name : Text
+  , builder : Text
+  , script : Text
+  , subs : [(Text, unix.Ref)]        -- @token@ -> reference
+  , inputs : [(unix.Ref, Text)]      -- (drv ref, output name)
+  , fixed : Optional Text            -- SRI hash => fixed-output
+  }
+
+type unix.Plan = { nodes : [unix.Node] }  -- deps before dependents
+
+-- Pure index lookup. A miss is a plan-time error, not a fallback
+-- to the evaluator: purity means the oracle runs at pin time only.
+unix.index.get : Text -> {Exception} (Text, Text, Text)
+unix.index.get attr = match unix.index.lookup attr nixpkgs.index with
+  Some t -> t
+  None ->
+    Exception.raise
+      (Generic.failure
+        ("not in the pinned index (run ./run.sh index): " ++ attr)
+        ())
+
+unix.plan : unix.Pkg -> {Exception} unix.Plan
+unix.plan pkg = unix.Plan.Plan (at1 (unix.plan.go ([], []) pkg))
+
+unix.plan.fetchNode :
+  ([unix.Node], [Text]) -> Text -> Text -> Text
+    -> {Exception} ([unix.Node], [Text])
+unix.plan.fetchNode acc fname url sri = match acc with
+  (nodes, seen) ->
+    if List.any (n -> n Text.== fname) seen then acc
+    else
+      (bashDrv, bashOut, bashOutName) = unix.index.get "bash"
+      (curlDrv, curlOut, curlOutName) = unix.index.get "curl"
+      (certDrv, certOut, certOutName) = unix.index.get "cacert"
+      script =
+        "export SSL_CERT_FILE=" ++ certOut
+          ++ "/etc/ssl/certs/ca-bundle.crt; " ++ curlOut
+          ++ "/bin/curl --fail --location --output \"$out\" " ++ url
+      node =
+        unix.Node.Node
+          fname
+          (bashOut ++ "/bin/bash")
+          script
+          []
+          [ (unix.Ref.Path bashDrv, bashOutName)
+          , (unix.Ref.Path curlDrv, curlOutName)
+          , (unix.Ref.Path certDrv, certOutName)
+          ]
+          (Some sri)
+      (nodes :+ node, seen :+ fname)
+
+unix.plan.go :
+  ([unix.Node], [Text]) -> unix.Pkg -> {Exception} ([unix.Node], [Text])
+unix.plan.go acc pkg = match pkg with
+  unix.Pkg.Pkg name script deps -> match acc with
+    (nodes, seen) ->
+      if List.any (n -> n Text.== name) seen then acc
+      else
+        step = a -> dep -> match a with
+          (ns, sn, subs, ins) -> match dep with
+            unix.Dep.Local p ->
+              (ns2, sn2) = unix.plan.go (ns, sn) p
+              pn = unix.Pkg.name p
+              ( ns2, sn2
+              , subs :+ (pn, unix.Ref.Output pn)
+              , ins :+ (unix.Ref.Drv pn, "out")
+              )
+            unix.Dep.Nixpkgs attr ->
+              (dp, op, on) = unix.index.get attr
+              ( ns, sn
+              , subs :+ (attr, unix.Ref.Path op)
+              , ins :+ (unix.Ref.Path dp, on)
+              )
+            unix.Dep.Fetch fname url sri ->
+              (ns2, sn2) = unix.plan.fetchNode (ns, sn) fname url sri
+              ( ns2, sn2
+              , subs :+ (fname, unix.Ref.Output fname)
+              , ins :+ (unix.Ref.Drv fname, "out")
+              )
+        (nodes2, seen2, subs, ins) =
+          List.foldLeft step (nodes, seen :+ name, [], []) deps
+        (bashDrv, bashOut, bashOutName) = unix.index.get "bash"
+        node =
+          unix.Node.Node
+            name
+            (bashOut ++ "/bin/bash")
+            script
+            subs
+            (ins :+ (unix.Ref.Path bashDrv, bashOutName))
+            None
+        (nodes2 :+ node, seen2)
+
+-- Fold the plan into the daemon: add each drv, learn its path,
+-- resolve downstream references. Returns the root drv path.
+unix.submit : unix.Plan -> {IO, Exception} Text
+unix.submit p = match p with
+  unix.Plan.Plan nodes ->
+    look = acc -> n -> match unix.assoc.lookup n acc with
+      Some pr -> pr
+      None ->
+        Exception.raise
+          (Generic.failure ("plan out of order: " ++ n) ())
+    step = acc -> node -> match node with
+      unix.Node.Node name builder script subs ins fixed ->
+        resolveDrv = r -> match r with
+          unix.Ref.Path t -> t
+          unix.Ref.Drv n -> at1 (look acc n)
+          unix.Ref.Output n -> at1 (look acc n)
+        resolveOut = r -> match r with
+          unix.Ref.Path t -> t
+          unix.Ref.Drv n -> at1 (look acc n)
+          unix.Ref.Output n -> at2 (look acc n)
+        script' =
+          List.foldLeft
+            (s -> pr -> match pr with
+              (tok, ref) ->
+                Text.replaceAll ("@" ++ tok ++ "@") (resolveOut ref) s)
+            script
+            subs
+        depDrvs =
+          List.map
+            (pr -> match pr with (ref, on) -> (resolveDrv ref, on))
+            ins
+        (outEnv, outsJson) = match fixed with
+          Some sri -> ("", unix.fixedOutputs sri)
+          None -> (unix.placeholder "out", unix.caOutputs)
+        drvPath =
+          unix.addDrv
+            (unix.drvJson' name builder script' depDrvs outEnv outsJson)
+        outText = match fixed with
+          Some _ ->
+            unix.chomp
+              (unix.exec "nix-store" ["--query", "--outputs", drvPath] "")
+          None -> unix.upstreamPlaceholder drvPath "out"
+        printLine ("  drv " ++ name ++ " -> " ++ drvPath)
+        acc :+ (name, (drvPath, outText))
+    final = List.foldLeft step [] nodes
+    match List.last final with
+      Some pr -> at1 (at2 pr)
+      None -> Exception.raise (Generic.failure "empty plan" ())
+
 unix.realise : unix.Pkg -> {IO, Exception} Text
-unix.realise pkg = at2 (unix.realise.go [] pkg)
+unix.realise pkg = unix.submit (unix.plan pkg)
 
 -- Resolve a dep list to (name, drvPath, outputName, substText)
 -- tuples. Local deps realise recursively (cache threads through);

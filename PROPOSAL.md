@@ -310,6 +310,46 @@ configuration-*.nix) are the irreducible knowledge and port as data.
   maintainers per committer, held together by a mechanically-checkable safe
   subset for the merge bot).
 
+## 6b. Effects and purity
+
+Nix guarantees side-effect-free evaluation by prohibition: the language
+cannot do IO, so the drv graph is a deterministic function of the source.
+That bluntness is also why Nix's warts exist — import-from-derivation
+blocking eval on builds, `--impure`, fetchers special-cased in the
+interpreter.
+
+upkgs gets the same guarantee from ability types, per definition and
+machine-checked (demonstrated in the spike):
+
+```unison
+unix.plan   : unix.Pkg -> {Exception} unix.Plan   -- typechecker-proved: no IO
+unix.submit : unix.Plan -> {IO, Exception} Text   -- the only effectful step
+```
+
+- **Package definitions and the resolver are ability-free.** `Pkg` values
+  and `resolve : Ctx -> Name -> Result Unavailable Pkg` carry no `{IO}`;
+  "same codebase hash + same Ctx → same graph" is enforced by the
+  typechecker, and a reviewer reads it off the signature. `Exception` is
+  pure failure (Result-shaped), not an effect escape.
+- **Effects are quarantined at three edges**, each already effect-typed:
+  fetch execution (FODs with declared hashes — the same rule as Nix),
+  oracle/index snapshotting (IO once per pin, producing a content-addressed
+  value — the flake-lock model, typed), and graph submission to the daemon.
+- **Purity is enforceable at the repository boundary.** A definition's
+  transitive code closure is enumerable by hash (`Code.dependencies`; base
+  ships `Value.validateSandboxed` for exactly this), so a curated namespace
+  can mechanically reject package definitions whose closure touches IO
+  builtins. Nix enforces purity in the interpreter; upkgs enforces it at
+  publish time with the same confidence and better error locality.
+- **Honest difference**: the guarantee is opt-in structure, not a global
+  language property. The repo convention ("package namespaces are
+  ability-free") plus the boundary check *is* the guarantee. In exchange,
+  code that genuinely needs effects gets them explicitly, visibly, and
+  without interpreter special cases.
+- A corollary: a pure resolver memoized on definition hashes is a *sound*
+  eval cache — what Nix's flake eval cache approximates with coarse
+  flake-level keys.
+
 ## 7. Scalability (measured)
 
 Same machine, same nixpkgs pin:

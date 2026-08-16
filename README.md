@@ -339,9 +339,23 @@ Nix rewrites the second kind to the real store path when it resolves
 the derivation at build time. Source: `src/libstore/downstream-placeholder.cc`
 in [nixos/nix](https://github.com/NixOS/nix).
 
-`unix.realise` walks the package graph depth-first. It adds each
-derivation to the store once. It substitutes `@depname@` tokens in
-build scripts with upstream placeholders.
+Realisation is split into a pure planner and an effectful
+submitter, and the typechecker enforces the split:
+
+```unison
+unix.plan   : unix.Pkg -> {Exception} unix.Plan       -- no IO ability
+unix.submit : unix.Plan -> {IO, Exception} Text
+```
+
+`plan` computes the whole build graph — scripts, dependency edges,
+fixed-output hashes — against the pinned index, with no IO in its
+type. That is Nix's pure-eval guarantee, but per definition and
+proved by the type system rather than by prohibiting effects in the
+whole language. Since the daemon computes all store paths, planned
+nodes reference each other symbolically (`unix.Ref`); `submit`
+folds the plan into the daemon, resolving references as drv paths
+become known and substituting `@depname@` tokens with upstream
+placeholders or literal paths.
 
 Generated derivations use structured attrs out of the box. `env`
 carries only the output paths; everything else lives in
