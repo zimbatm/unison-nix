@@ -1,3 +1,16 @@
+update
+load src/nixpkgs-index.u
+update
+load src/nixpkgs-index.u
+update
+load src/nixpkgs-index.u
+view lib.unison_base_7_19_2.IO.FilePath
+view lib.unison_base_7_19_2.IO.FilePath.exists
+view lib.unison_base_7_19_2.IO.FilePath.writeFileUtf8
+view lib.unison_base_7_19_2.IO.FilePath.exists
+find FilePath.exists
+find writeFile
+find : Text ->{IO,Exception} Boolean
 find object.
 view lib.unison_json_1_4_2.core.Json
 find fromText

@@ -63,9 +63,29 @@ needed for this direction. A floating CA derivation may depend on
 input-addressed derivations; the daemon accepts the mixed graph.
 
 The Nix language still runs here, but demoted to an import oracle —
-the role Scheme gives `guix import`. A remaining refinement on the
-same seam: eval a pinned index once per nixpkgs revision and store
-it as a Unison value, so use time is eval-free.
+the role Scheme gives `guix import`.
+
+### The pinned index: use time is eval-free
+
+`./run.sh index` evaluates all needed attrs in a single `nix eval`
+call and writes `src/nixpkgs-index.u`:
+
+```unison
+nixpkgs.index : [(Text, Text, Text, Text)]
+nixpkgs.index =
+  [ ("hello", "/nix/store/vvjw1pyn...-hello-2.12.3.drv"
+    , "/nix/store/pg2zfrrb...-hello-2.12.3", "out")
+  , ...
+  ]
+```
+
+The file is `update`d into the ucm codebase, so the index is a
+plain Unison value — content-addressed, shareable through Unison
+Share like any other definition. Resolving an attr is then a pure
+lookup plus a file-exists check on the .drv. The Nix evaluator only
+runs on an index miss or after a GC. With the index, `./run.sh
+shout` drops from ~7s to ~4s, and the remainder is ucm startup, not
+Nix; `hello` no longer re-evals its ten toolchain attrs per run.
 
 ## Building from source: it works too
 
@@ -189,6 +209,8 @@ bash.
 - `src/unix.u` — the whole spike. Base32, placeholders, derivation
   JSON, process handling, nixpkgs eval, graph realisation, a demo
   package set.
+- `src/nixpkgs-index.u` — generated pinned index of nixpkgs attrs.
+  Synced into the codebase by `run.sh`.
 - `setup.md` — UCM transcript. It creates the codebase and installs
   `@unison/base` and `@unison/json`.
 - `run.sh` — bootstraps the codebase on first run, then runs
@@ -205,6 +227,7 @@ nix develop          # or: nix shell nixpkgs#unison-ucm
 ./run.sh shout       # build a package with nixpkgs dependencies
 ./run.sh hello       # compile GNU hello from the upstream tarball
 ./run.sh uni-hello   # override nixpkgs hello with a pure function
+./run.sh index       # regenerate the pinned nixpkgs index
 ```
 
 Requires Nix 2.35+ with a daemon. The `ca-derivations` and
@@ -230,11 +253,9 @@ is needed.
 - One output (`out`) per local package. Multi-output needs more
   placeholder plumbing, not new ideas. Nixpkgs deps already carry
   their real output name.
-- Nixpkgs deps eval one attribute per `nix eval` call, at realise
-  time. A pinned, batch-evaluated index (e.g. via nix-eval-jobs)
-  would make use time eval-free.
-- `./run.sh hello` re-evals its ten toolchain attrs on every run.
-  Same fix as above.
+- The index only covers `unix.index.attrs`; other attrs fall back
+  to one `nix eval` each. The index records the local .drv path but
+  not how to refetch it, so after a GC the fallback re-evals.
 - The build script DSL (`@dep@` substitution) is a placeholder for a
   real typed builder API.
 - `unix.importDrv` imports one derivation, not its closure.
@@ -267,7 +288,11 @@ is needed.
    structured attrs changed all drv hashes, but `shout` and
    `hello-2.12.1` rebuilt to byte-identical outputs and kept their
    store paths.
-8. `nix derivation show` and `nix derivation add` speak the same
+8. A pinned index is just a Unison value in the codebase. One batch
+   eval per nixpkgs revision; use time needs no evaluator. The only
+   liveness concern is whether the indexed .drv still exists in the
+   store, which one `stat` answers.
+9. `nix derivation show` and `nix derivation add` speak the same
    JSON. A derivation is therefore a first-class value: parse,
    transform with a pure function, print, build. CA-ification (old
    output paths -> placeholders, outputs -> floating) makes the
