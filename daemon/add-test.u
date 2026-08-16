@@ -1,0 +1,17 @@
+nixd.unixConnect : Text ->{IO, Exception} Socket
+nixd.unixConnect path =
+  match lib.sockimpl path with
+    Right sock -> sock
+    Left f -> raise f
+
+nixd.addMain : '{IO, Exception} ()
+nixd.addMain = do
+  sock = nixd.unixConnect "/nix/var/nix/daemon-socket/socket"
+  _ = nixd.handshake sock
+  tree =
+    nar.Fs.Dir
+      [ ("hello", nar.Fs.File (Text.toUtf8 "added by upkg over the socket\n") false)
+      , ("bin", nar.Fs.Dir [("run", nar.Fs.File (Text.toUtf8 "#!/bin/sh\necho hi\n") true)])
+      ]
+  path = nixd.addToStore sock "upkg-unison-add" [] tree
+  printLine ("daemon stored -> " ++ path)

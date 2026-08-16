@@ -61,7 +61,11 @@ nixd.processStderr sock =
   loop = do
     tag = nixd.recvNat sock
     if tag == 0x616c7473 then ()          -- LAST
-    else if tag == 0x63787470 then         -- ERROR
+    else if tag == 0x63787470 then         -- ERROR: a structured Error;
+      -- fields: type, level, name, msg (the human message), ...
+      _typ = nixd.recvStr sock
+      _lvl = nixd.recvNat sock
+      _name = nixd.recvStr sock
       msg = nixd.recvStr sock
       Exception.raise (Generic.failure ("nixd error: " ++ msg) ())
     else if tag == 0x6f6c6d67 then         -- NEXT: a log line
@@ -140,7 +144,7 @@ nixd.addToStore :
 nixd.addToStore sock name references fs =
   Socket.send sock (nixd.putNat 7)             -- Op::AddToStore
   Socket.send sock (nixd.putStr name)
-  Socket.send sock (nixd.putStr "nar:sha256")  -- caMethod.renderWithAlgo
+  Socket.send sock (nixd.putStr "fixed:r:sha256")  -- recursive NAR, sha256
   Socket.send sock (nixd.putPaths references)
   Socket.send sock (nixd.putNat 0)             -- repair = false
   Socket.send sock (nixd.putFramed (nar.dump fs))

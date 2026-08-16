@@ -93,6 +93,29 @@ write path (addToStore) is written from the Nix source and typechecks.
   read one u64 late.
 - NAR (`nar.u`): complete and byte-exact-verified against `nix-store
   --dump`. No socket needed.
-- Remaining: wire `wopAddToStore` (name, refs, framed NAR source) and
-  `wopBuildPaths` on top of the client, then swap upkg's process spawns
-  for socket calls.
+- Write path (`wopAddToStore`): **DONE and proven live from Unison.**
+  `add-test.u` builds a NAR tree in memory (a dir + a nested executable),
+  sends it over the socket, and the daemon hashes and stores it:
+  `/nix/store/...-upkg-unison-add` with the executable bit preserved and a
+  matching nar hash. Two corrections from the live daemon: the caMethod
+  string is `fixed:r:sha256` (not `nar:sha256`), and STDERR_ERROR carries a
+  structured Error whose 4th field is the human message. Requires a
+  trusted user (I am @wheel); reads work untrusted.
+
+## Wiring into upkg -- status
+The client is complete: reads (`isValidPath`) and writes (`addToStore`,
+recursive NAR) both run from Unison against the live daemon. It is upkg's
+daemon backend -- the seam that replaces the `nix` subprocess calls. What
+each current spawn needs:
+- `nix store add` (the ship path) -> `addToStore`: directly replaceable,
+  proven (flat mode is a one-line method variant of the recursive case).
+- `nix derivation add` -> render the drv as ATerm (not JSON) and
+  `addToStore` it as `text:sha256`; bounded serializer work.
+- `nix build ^out` -> `wopBuildPaths` + `queryPathInfo`; bounded.
+- `nix eval` -> no protocol op (evaluation is client-side); stays CLI.
+
+The one real blocker to making the socket the DEFAULT: upkg's main flow
+runs on stock ucm (release 1.3.0), which lacks the `unixClientSocket`
+builtin. The clean fix is shipping the builtin in a forked `@unison/base`
+(`daemon/af-unix.patch` is the runtime side); then upkg runs on stock ucm
+and the CLI spawns become socket calls with no per-project ceremony.
