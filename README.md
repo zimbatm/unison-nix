@@ -508,6 +508,8 @@ nix develop          # or: nix shell nixpkgs#unison-ucm
 ./run.sh hexyl       # build a real Rust tool from its Cargo.lock
 ./run.sh profile     # user environment composing pkgs + nixpkgs
 ./run.sh graft       # patch a leaf, watch CA cut the rebuild cascade
+./run.sh motd        # writeText: a fixed-string artifact
+./run.sh profile     # symlinkJoin: merge Unison + nixpkgs packages
 ./run.sh upkg        # upkg packages itself (the quine)
 ./run.sh uni-hello   # override nixpkgs hello with a pure function
 ./run.sh deep-hello  # override stdenv, rewrite the closure

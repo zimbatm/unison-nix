@@ -1,0 +1,84 @@
+-- Trivial builders: the everyday vocabulary. In nixpkgs these
+-- (writeText, runCommand, symlinkJoin, linkFarm, ...) are the most
+-- used helpers -- the words you reach for constantly. Here they are
+-- ordinary Unison functions returning UPkg values, built on the Sh
+-- dialect. coreutils supplies mkdir, cp, ln, chmod via /bin.
+
+upkg.coreutils : upkg.Dep
+upkg.coreutils = upkg.Dep.Nixpkgs "coreutils"
+
+-- The token a dep is addressed by in a build script (@name@, or the
+-- dep function). Matches how plan.deps keys each kind.
+upkg.Dep.name : upkg.Dep -> Text
+upkg.Dep.name = cases
+  upkg.Dep.Local p -> upkg.Pkg.name p
+  upkg.Dep.LocalU up -> upkg.UPkg.name up
+  upkg.Dep.Nixpkgs attr -> attr
+  upkg.Dep.Fetch fname _ _ -> fname
+
+-- Write a fixed string to a single-file output.
+upkg.writeText : Text -> Text -> upkg.UPkg
+upkg.writeText name content =
+  upkg.UPkg.UPkg
+    name
+    (do writeFileUtf8 (FilePath upkg.Sh.out) content)
+    []
+
+-- Write an executable shell script to $out (a file, +x).
+upkg.writeShellScript : Text -> Text -> upkg.UPkg
+upkg.writeShellScript name body =
+  script = do
+    use upkg.Sh run
+    out = upkg.Sh.out
+    writeFileUtf8 (FilePath out) ("#!/bin/sh\n" ++ body ++ "\n")
+    run "chmod" ["+x", out]
+  upkg.UPkg.UPkg name script [upkg.coreutils]
+
+-- Run a shell body with a set of packages on PATH, producing $out.
+-- The everyday escape hatch, like nixpkgs runCommand.
+upkg.runCommand :
+  Text -> [upkg.Dep] -> ('{IO, Exception, upkg.Sh} ()) -> upkg.UPkg
+upkg.runCommand name deps body =
+  upkg.UPkg.UPkg name body (upkg.coreutils +: deps)
+
+-- Merge the given packages into one output: every entry under each
+-- dep is symlinked into $out, directories merged. Like nixpkgs
+-- symlinkJoin.
+upkg.symlinkJoin : Text -> [upkg.Dep] -> upkg.UPkg
+upkg.symlinkJoin name deps =
+  script = do
+    use upkg.Sh run dep
+    out = upkg.Sh.out
+    run "mkdir" ["-p", out]
+    link = d -> let
+      -- lndir semantics: recreate every dir as a real dir, symlink
+      -- every leaf. cp -rs would symlink whole subtrees and then
+      -- fail to merge a second dep under a read-only symlinked dir.
+      src = dep (upkg.Dep.name d)
+      run
+        "/bin/sh"
+        [ "-c"
+        , "cd " ++ src ++ " && find . -type d -exec mkdir -p " ++ out
+            ++ "/{} ';' && find . '!' -type d -exec ln -sf " ++ src
+            ++ "/{} " ++ out ++ "/{} ';'"
+        ]
+    List.foreach link deps
+  -- findutils for the recursive walk; coreutils for mkdir/ln.
+  upkg.UPkg.UPkg
+    name
+    script
+    ([upkg.coreutils, upkg.Dep.Nixpkgs "findutils"] ++ deps)
+
+-- A directory of named symlinks: out/<name> -> <dep path>. Like
+-- nixpkgs linkFarm.
+upkg.linkFarm : Text -> [upkg.Dep] -> upkg.UPkg
+upkg.linkFarm name deps =
+  script = do
+    use upkg.Sh run dep
+    out = upkg.Sh.out
+    run "mkdir" ["-p", out]
+    link = d -> let
+      n = upkg.Dep.name d
+      run "ln" ["-s", dep n, out ++ "/" ++ n]
+    List.foreach link deps
+  upkg.UPkg.UPkg name script (upkg.coreutils +: deps)

@@ -6,26 +6,7 @@ load src/site.u
 update
 load src/pkgs.u
 update
-load src/upkg/06-cargo.u
-update
-load src/upkg/05-drv.u
-update
-load src/upkg/04-plan.u
-update
-load src/upkg/03-ship.u
-update
-load src/upkg/02-index.u
-update
-load src/upkg/01-model.u
-update
-load src/upkg/00-core.u
-compile upkg.Sh.runner .ucm-compiled/runner
-compile site.test.main .ucm-compiled/test
-compile site.main .ucm-compiled/upkg
-update
-load src/site.u
-update
-load src/pkgs.u
+load src/upkg/07-builders.u
 update
 load src/upkg/06-cargo.u
 update
@@ -40,6 +21,8 @@ update
 load src/upkg/01-model.u
 update
 load src/upkg/00-core.u
+update
+load src/nixpkgs-index.u
 compile upkg.Sh.runner .ucm-compiled/runner
 compile site.test.main .ucm-compiled/test
 compile site.main .ucm-compiled/upkg
@@ -47,6 +30,8 @@ update
 load src/site.u
 update
 load src/pkgs.u
+update
+load src/upkg/07-builders.u
 update
 load src/upkg/06-cargo.u
 update
@@ -69,6 +54,8 @@ load src/site.u
 update
 load src/pkgs.u
 update
+load src/upkg/07-builders.u
+update
 load src/upkg/06-cargo.u
 update
 load src/upkg/05-drv.u
@@ -82,7 +69,6 @@ update
 load src/upkg/01-model.u
 update
 load src/upkg/00-core.u
-find socket
 compile upkg.Sh.runner .ucm-compiled/runner
 compile site.test.main .ucm-compiled/test
 compile site.main .ucm-compiled/upkg
@@ -91,6 +77,8 @@ load src/site.u
 update
 load src/pkgs.u
 update
+load src/upkg/07-builders.u
+update
 load src/upkg/06-cargo.u
 update
 load src/upkg/05-drv.u
@@ -98,3 +86,15 @@ update
 load src/upkg/04-plan.u
 update
 load src/upkg/03-ship.u
+update
+load src/upkg/02-index.u
+update
+load src/upkg/01-model.u
+update
+load src/upkg/00-core.u
+compile upkg.Sh.runner .ucm-compiled/runner
+compile site.test.main .ucm-compiled/test
+compile site.main .ucm-compiled/upkg
+update
+load src/site.u
+update

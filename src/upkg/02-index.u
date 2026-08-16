@@ -34,9 +34,9 @@ upkg.resolveNixpkgs attr =
 -- of them in a single nix eval call.
 upkg.index.attrs : [Text]
 upkg.index.attrs =
-  [ "bash", "cacert", "cargo", "coreutils", "curl", "gawk", "gcc"
-  , "gettext", "gnugrep", "gnumake", "gnused", "gnutar", "gzip"
-  , "hello", "nginx", "rustc", "unison-ucm"
+  [ "bash", "cacert", "cargo", "coreutils", "curl", "findutils"
+  , "gawk", "gcc", "gettext", "gnugrep", "gnumake", "gnused"
+  , "gnutar", "gzip", "hello", "nginx", "rustc", "unison-ucm"
   ]
 
 upkg.index.generate : '{IO, Exception} ()

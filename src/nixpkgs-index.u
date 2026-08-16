@@ -11,6 +11,7 @@ nixpkgs.index =
   , ("cargo", "/nix/store/5dbpy9dyrf4jhmpi99dsz1h2fh2ps9by-cargo-1.96.1.drv", "/nix/store/wjqh444sdwagpwyw25wdhk9rxl77rn6c-cargo-1.96.1", "out")
   , ("coreutils", "/nix/store/nvmwza7ls167mw3j9fd60h009nwb5c17-coreutils-9.11.drv", "/nix/store/cp7wjv1pl4wapfk48svvizxd089v9h0a-coreutils-9.11", "out")
   , ("curl", "/nix/store/y0w0b4xy7vp4v777yh6pnkjlf5qp6319-curl-8.21.0.drv", "/nix/store/p4j27d0562xma7y3hpls2lm6v20sbfcv-curl-8.21.0-bin", "bin")
+  , ("findutils", "/nix/store/lzv9x9lf0glknw6r5srs9afbsl58qhxs-findutils-4.10.0.drv", "/nix/store/f4bixss3h2i80asiz45aj4qmplvmam4k-findutils-4.10.0", "out")
   , ("gawk", "/nix/store/klqv2jjh181lrrmfxxxc97fwxf9smxxh-gawk-5.4.0.drv", "/nix/store/cb4h2p8j9m45riqawxlfndpz4arlv4rs-gawk-5.4.0", "out")
   , ("gcc", "/nix/store/q78xs1xfvmjrsj9aj4kaicv13qgp67ip-gcc-wrapper-15.2.0.drv", "/nix/store/vdaz6sk455r8sbpi7wzaf9vlz5i9yyvx-gcc-wrapper-15.2.0", "out")
   , ("gettext", "/nix/store/m2m3hhzqk7s6irbsnvmp49fa96fdawj2-gettext-1.0.drv", "/nix/store/dymb441kkml42b8405pg0xixl99298gl-gettext-1.0", "out")

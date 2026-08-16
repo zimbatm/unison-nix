@@ -16,27 +16,22 @@ site.web =
       (Some ("admin", pkgs.Secret.FromEnv "NGINX_PASSWORD")))
 
 
--- A user environment: packages from the collection (Unison-built
--- and nixpkgs alike) symlinked into one bin/.
+-- A user environment: our Unison-built hello and nixpkgs grep,
+-- merged into one tree by the trivial builder. The hand-rolled ln
+-- loop is gone -- this is the everyday vocabulary at work.
 site.profile : upkg.UPkg
 site.profile =
-  script = do
-    use upkg.Sh run dep
-    out = upkg.Sh.out
-    run "mkdir" ["-p", out ++ "/bin"]
-    link = d -> run "/bin/sh" ["-c", "ln -s " ++ d ++ "/bin/* " ++ out ++ "/bin/"]
-    link (dep "uhello-2.12.1")
-    link (dep "gnugrep")
-  upkg.UPkg.UPkg
+  upkg.symlinkJoin
     "profile"
-    script
-    [ upkg.Dep.LocalU pkgs.uhello
-    , upkg.Dep.Nixpkgs "gnugrep"
-    , upkg.Dep.Nixpkgs "coreutils"
-    ]
+    [upkg.Dep.LocalU pkgs.uhello, upkg.Dep.Nixpkgs "gnugrep"]
+
+-- A one-liner config artifact, built with writeText.
+site.motd : upkg.UPkg
+site.motd = upkg.writeText "motd" "built by upkg\n"
 
 site.registry : [(Text, upkg.UPkg)]
-site.registry = [("nginx", site.web), ("profile", site.profile)]
+site.registry =
+  [("nginx", site.web), ("profile", site.profile), ("motd", site.motd)]
 
 -- ----------------------------------------------------------------
 -- The quine: upkg packaged by upkg. The build script is a shipped
