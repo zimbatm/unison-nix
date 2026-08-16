@@ -1,9 +1,19 @@
 # unix — Unison as a frontend to Nix
 
+> [!WARNING]
+> **Set your expectations accordingly.** This repository is 100%
+> LLM-generated (written by Claude in a series of pair-exploration
+> sessions). It is an exploration, not a product: a working sketch
+> of what it would look like to use
+> [Unison](https://www.unison-lang.org/) as the frontend language to
+> the nix-daemon, in place of the Nix expression language. Expect
+> spike-quality code, hardcoded paths, and no maintenance promises.
+> The findings and the working demos are real; treat everything else
+> as a starting point for discussion.
+
 This repo is a spike. It tests one idea: replace the Nix expression
-language with [Unison](https://www.unison-lang.org/), the way Guix
-replaced it with Scheme. The Nix daemon and store stay. The language
-goes.
+language with Unison, the way Guix replaced it with Scheme. The Nix
+daemon and store stay. The language goes.
 
 ## Status: it works
 
