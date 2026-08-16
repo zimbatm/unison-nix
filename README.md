@@ -300,6 +300,38 @@ This is the lockfile pattern from PROPOSAL.md §5.2, implemented:
 One wrinkle: Unison base has no setenv, so `CARGO_HOME` is passed
 by spawning through coreutils' `env(1)`.
 
+## The graft: security response without the mass rebuild
+
+```
+$ ./run.sh graft
+== graft: no-op patch on greeting, deep in the graph ==
+before any build:
+these 3 derivations will be built:      <- what input-addressing would do
+  .../greeting.drv  .../banner.drv  .../shout.drv
+after building only the patched greeting, the root build ran 0 builds
+out: /nix/store/1fjn12k4...-shout       <- unchanged
+```
+
+An overlay here is a pure function on the plan:
+
+```unison
+upkg.Plan.patchScript "greeting" (s -> s ++ " # security patch")
+  (upkg.plan pkgs.shout)
+```
+
+Every dependent drv changes (its input drv path changed), which in
+nixpkgs means rebuilding the world through `staging`. Here the
+patched leaf rebuilds, its output is byte-identical, the daemon
+resolves every dependent to its existing realisation, and the
+cascade stops: **zero downstream builds**. This is the typed graft
+from PROPOSAL.md -- faster than Guix grafts (no binary patching,
+no same-length path constraint) and it degrades gracefully: if the
+patch *does* change bytes, exactly the affected cone rebuilds.
+
+Gotcha recorded: `nix build --dry-run` does not consult
+realisations for floating CA outputs, so it always predicts the
+full conservative cascade; count actual `building` lines instead.
+
 ## The quine: upkg packages upkg
 
 ```
@@ -475,6 +507,7 @@ nix develop          # or: nix shell nixpkgs#unison-ucm
 ./run.sh hello       # compile GNU hello from the upstream tarball
 ./run.sh hexyl       # build a real Rust tool from its Cargo.lock
 ./run.sh profile     # user environment composing pkgs + nixpkgs
+./run.sh graft       # patch a leaf, watch CA cut the rebuild cascade
 ./run.sh upkg        # upkg packages itself (the quine)
 ./run.sh uni-hello   # override nixpkgs hello with a pure function
 ./run.sh deep-hello  # override stdenv, rewrite the closure

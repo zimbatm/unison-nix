@@ -19,8 +19,6 @@ update
 load src/upkg/01-model.u
 update
 load src/upkg/00-core.u
-find Exception.catch
-find Exception.toEither
 compile upkg.Sh.runner .ucm-compiled/runner
 compile site.test.main .ucm-compiled/test
 compile site.main .ucm-compiled/upkg
@@ -63,9 +61,6 @@ update
 load src/upkg/01-model.u
 update
 load src/upkg/00-core.u
-delete.term upkg.assoc.lookup
-update
-load src/nixpkgs-index.u
 compile upkg.Sh.runner .ucm-compiled/runner
 compile site.test.main .ucm-compiled/test
 compile site.main .ucm-compiled/upkg
@@ -87,14 +82,19 @@ update
 load src/upkg/01-model.u
 update
 load src/upkg/00-core.u
-view pkgs.unginx
-delete.type upkg.Secret
-delete.type upkg.NginxConfig
-delete.namespace upkg.Secret
-delete.namespace upkg.NginxConfig
-delete.namespace upkg.nginx
-delete.term upkg.mkNginx
-delete.term pkgs.self.script
-delete.term pkgs.self
-delete.term pkgs.unginx
-view pkgs.self
+find socket
+compile upkg.Sh.runner .ucm-compiled/runner
+compile site.test.main .ucm-compiled/test
+compile site.main .ucm-compiled/upkg
+update
+load src/site.u
+update
+load src/pkgs.u
+update
+load src/upkg/06-cargo.u
+update
+load src/upkg/05-drv.u
+update
+load src/upkg/04-plan.u
+update
+load src/upkg/03-ship.u

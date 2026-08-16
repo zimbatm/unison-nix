@@ -152,6 +152,67 @@ site.dispatch args =
           ["build", "--no-link", "--print-out-paths", newRoot ++ "^out"]
           ""
       printLine ("out: " ++ upkg.chomp out)
+    ["graft"] ->
+      printLine "== build shout =="
+      drv0 = upkg.submit (upkg.plan pkgs.shout)
+      out0 =
+        upkg.chomp
+          (upkg.nix
+            ["build", "--no-link", "--print-out-paths", drv0 ++ "^out"]
+            "")
+      printLine ("out: " ++ out0)
+      printLine "== graft: no-op patch on greeting, deep in the graph =="
+      patched =
+        upkg.Plan.patchScript
+          "greeting"
+          (s -> s ++ " # security patch 2026-08 rev2")
+          (upkg.plan pkgs.shout)
+      drv1 = upkg.submit patched
+      dryRun = d -> let
+        upkg.exec
+          "/bin/sh"
+          [ "-c"
+          , "nix --extra-experimental-features nix-command --extra-experimental-features ca-derivations build --no-link --dry-run "
+              ++ d ++ "^out 2>&1"
+          ]
+          ""
+      printLine ("before any build:\n" ++ dryRun drv1)
+      -- build only the patched leaf, then ask the daemon what the
+      -- root still needs: nothing, if the cutoff cut the cascade.
+      gdrv =
+        upkg.submit
+          (upkg.Plan.patchScript
+            "greeting"
+            (s -> s ++ " # security patch 2026-08 rev2")
+            (upkg.plan pkgs.greeting))
+      _ = upkg.nix ["build", "--no-link", gdrv ++ "^out"] ""
+      buildLog =
+        upkg.exec
+          "/bin/sh"
+          [ "-c"
+          , "nix --extra-experimental-features nix-command --extra-experimental-features ca-derivations build --no-link "
+              ++ drv1 ++ "^out 2>&1"
+          ]
+          ""
+      actuallyBuilt =
+        List.filter
+          (l -> Text.startsWith "building" l)
+          (Text.split ?\n buildLog)
+      printLine
+        ("after building only the patched greeting, the root build ran "
+          ++ Nat.toText (List.size actuallyBuilt)
+          ++ " builds:\n" ++ Text.join "\n" actuallyBuilt)
+      out1 =
+        upkg.chomp
+          (upkg.nix
+            ["build", "--no-link", "--print-out-paths", drv1 ++ "^out"]
+            "")
+      printLine ("out: " ++ out1)
+      printLine
+        (if (drv0 Text.== drv1) then "UNEXPECTED: drv unchanged"
+         else if out0 Text.== out1 then
+           "graft ok: every drv changed, output identical -- early cutoff held"
+         else "outputs differ: " ++ out0 ++ " vs " ++ out1)
     ["upkg"] ->
       printLine "realising upkg (the quine) ..."
       drv = upkg.realiseU site.self

@@ -413,7 +413,9 @@ The spike already built the bridges, in increasing independence:
 
 ## 10. Suggested first milestones
 
-1. Speak the daemon protocol directly (drop process spawning).
+1. Speak the daemon protocol directly (drop process spawning) —
+   **currently blocked**: Unison base has TCP sockets but no AF_UNIX,
+   and the nix-daemon listens only on a unix socket.
 2. Trivial-builder vocabulary + `Normalizer` library.
 3. Cargo ecosystem end-to-end (parse/plan/fetch/assemble/verify) —
    **done in the spike**: `./run.sh hexyl` builds hexyl 0.16.0 from its

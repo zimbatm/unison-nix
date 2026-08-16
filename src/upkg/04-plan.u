@@ -228,3 +228,31 @@ upkg.realise : upkg.Pkg -> {IO, Exception} Text
 upkg.realise pkg = upkg.submit (upkg.plan pkg)
 upkg.realiseU : upkg.UPkg -> {IO, Exception} Text
 upkg.realiseU up = upkg.submit (upkg.planU up)
+
+-- ----------------------------------------------------------------
+-- Overlays, upkg style: a pure rewrite of the planned graph. This
+-- is the whole override mechanism for native packages -- what
+-- nixpkgs does with overlay fixpoints is List.map here. Submitting
+-- a rewritten plan re-adds only the changed drvs; CA early cutoff
+-- stops the rebuild cascade wherever outputs are byte-identical.
+
+upkg.Plan.map : (upkg.Node -> upkg.Node) -> upkg.Plan -> upkg.Plan
+upkg.Plan.map f = cases
+  upkg.Plan.Plan ns -> upkg.Plan.Plan (List.map f ns)
+
+-- The typed graft: patch one node's build script in place. Every
+-- dependent gets a new drv (its input drv path changes), but if
+-- the patched node rebuilds to identical bytes, the daemon
+-- resolves dependents to their old realisations and no cascade
+-- happens.
+upkg.Plan.patchScript : Text -> (Text -> Text) -> upkg.Plan -> upkg.Plan
+upkg.Plan.patchScript name f =
+  upkg.Plan.map
+    (n ->
+      if upkg.Node.name n Text.== name then
+        upkg.Node.action.modify
+          (cases
+            upkg.Action.Script s -> upkg.Action.Script (f s)
+            a -> a)
+          n
+      else n)
