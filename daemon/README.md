@@ -52,6 +52,16 @@ the worker protocol, so `nar.str` == `nixd.putStr`. NAR is the source for
 `wopAddToStore`, so this is the hard half of "add a derivation to the
 store over the socket."
 
+## Cross-validated against go-nix
+The framing and NAR were checked against nix-community/go-nix (a separate
+implementation): `nixd.putStr`/`nar.bytes` match `wire.WriteBytes` (u64
+length + bytes + (8-n%8)%8 zero pad), and `nar.node`'s token order matches
+`nar/writer.go` exactly, including the sorted-entry requirement. What
+go-nix has that upkg deliberately does *not*: `storepath` + `derivation/
+hashes.go` + `drv_path.go`, the input-addressed store-path computation
+(`hashDerivationModulo`). Floating CA moves that into the daemon, so the
+frontend computes only two placeholder hashes.
+
 ## Status
 - Socket builtin: `unixClientSocket` patch applied to the unison runtime,
   patched ucm building.
