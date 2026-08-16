@@ -105,3 +105,40 @@ nixd.probe connect storePath =
   printLine ("daemon protocol " ++ Nat.toText v)
   ok = nixd.isValidPath sock storePath
   printLine (storePath ++ " valid? " ++ (if ok then "yes" else "no"))
+
+-- ----------------------------------------------------------------
+-- Write path. Field order taken from NixOS/nix 2.24
+-- remote-store.cc (addCAToStore), not guessed. Opcodes from
+-- worker-protocol.hh: AddToStore = 7, BuildPaths = 9,
+-- EnsurePath = 10, QueryValidPaths = 31.
+
+-- A store-path set: u64 count, then each path string.
+nixd.putPaths : [Text] -> Bytes
+nixd.putPaths paths =
+  List.foldLeft
+    (acc -> p -> acc ++ nixd.putStr p)
+    (nixd.putNat (List.size paths))
+    paths
+
+-- A FramedSink body: the payload in one frame (u64 length + bytes)
+-- terminated by a zero-length frame.
+nixd.putFramed : Bytes -> Bytes
+nixd.putFramed payload =
+  nixd.putNat (Bytes.size payload) ++ payload ++ nixd.putNat 0
+
+-- wopAddToStore for a NAR-serialized object. caMethod string is
+-- "nar:sha256"; the daemon computes the path from the NAR hash,
+-- so we still never compute a store path. Returns the path the
+-- daemon reports.
+nixd.addToStore :
+  Socket -> Text -> [Text] -> nar.Fs -> {IO, Exception} Text
+nixd.addToStore sock name references fs =
+  Socket.send sock (nixd.putNat 7)             -- Op::AddToStore
+  Socket.send sock (nixd.putStr name)
+  Socket.send sock (nixd.putStr "nar:sha256")  -- caMethod.renderWithAlgo
+  Socket.send sock (nixd.putPaths references)
+  Socket.send sock (nixd.putNat 0)             -- repair = false
+  Socket.send sock (nixd.putFramed (nar.dump fs))
+  nixd.processStderr sock
+  -- Response is a ValidPathInfo; its first field is the store path.
+  nixd.recvStr sock
