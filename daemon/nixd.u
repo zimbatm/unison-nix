@@ -145,6 +145,20 @@ nixd.readFields.go sock n i =
         0
     nixd.readFields.go sock n (i + 1)
 
+-- After an addToStore response's path, the daemon sends the rest of
+-- a ValidPathInfo. Leaving it unread offsets the NEXT op -- the bug
+-- that misaligned every add-then-build sequence. Consume it all.
+nixd.skipPathInfoTail : Socket -> {IO, Exception} ()
+nixd.skipPathInfoTail sock =
+  nixd.skipStr sock         -- deriver (optional store path, "" if none)
+  nixd.skipStr sock         -- narHash (base16)
+  nixd.skipStrings sock     -- references
+  _ = nixd.recvNat sock     -- registrationTime
+  _ = nixd.recvNat sock     -- narSize
+  _ = nixd.recvNat sock     -- ultimate  (>= 1.16)
+  nixd.skipStrings sock     -- sigs      (>= 1.16)
+  nixd.skipStr sock         -- ca        (>= 1.16)
+
 -- Read and skip a string set: count, then each string.
 nixd.skipStrings : Socket -> {IO, Exception} ()
 nixd.skipStrings sock = nixd.skipStrings.go sock (nixd.recvNat sock) 0
@@ -235,8 +249,11 @@ nixd.addToStore sock name references fs =
   Socket.send sock (nixd.putNat 0)             -- repair = false
   Socket.send sock (nixd.putFramed (nar.dump fs))
   nixd.processStderr sock
-  -- Response is a ValidPathInfo; its first field is the store path.
-  nixd.recvStr sock
+  -- Response is a ValidPathInfo: read the path, then consume the
+  -- rest so the next op stays aligned.
+  path = nixd.recvStr sock
+  nixd.skipPathInfoTail sock
+  path
 
 -- Flat add: raw file bytes, not a NAR. Matches
 -- `nix store add --mode flat` -- exactly what upkg's ship path does
@@ -250,4 +267,6 @@ nixd.addToStoreFlat sock name bytes =
   Socket.send sock (nixd.putNat 0)             -- repair = false
   Socket.send sock (nixd.putFramed bytes)
   nixd.processStderr sock
-  nixd.recvStr sock
+  path = nixd.recvStr sock
+  nixd.skipPathInfoTail sock
+  path

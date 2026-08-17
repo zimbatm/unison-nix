@@ -78,19 +78,16 @@ upkg.socket.submit sock p = match p with
           upkg.Action.Closure _ ->
             bug ("socket submit: closures not supported yet", name)
         printLine ("  drv " ++ name ++ " -> " ++ drvPath)
-        Map.put name (upkg.Built.Built drvPath (upkg.placeholder "out")) acc
+        Map.put name (upkg.Built.Built drvPath (upkg.upstreamPlaceholder drvPath "out")) acc
     final = List.foldLeft step Map.empty nodes
     match List.last nodes with
       Some n -> upkg.Built.drv (look final (upkg.Node.name n))
       None -> Exception.raise (Generic.failure "empty plan" ())
 
 -- Build a realised drv over the socket and read its output path.
-upkg.socket.build : Socket -> Text -> {IO, Exception} Text
+upkg.socket.build : Socket -> Text -> {IO, Exception} ()
 upkg.socket.build sock drvPath =
   nixd.buildPaths sock [drvPath ++ "!out"]
-  match upkg.lookup "out" (nixd.queryOutputs sock drvPath) with
-    Some o -> o
-    None -> Exception.raise (Generic.failure "no out in output map" ())
 
 -- The entrypoint: realise shout entirely over the socket.
 upkg.socket.main : '{IO, Exception} ()
@@ -100,8 +97,8 @@ upkg.socket.main = do
       Right s -> s
       Left f -> raise f
   _ = nixd.handshake sock
-  printLine "realising greeting over the socket (no nix subprocess) ..."
-  drv = upkg.socket.submit sock (upkg.plan pkgs.greeting)
+  printLine "realising shout over the socket (no nix subprocess) ..."
+  drv = upkg.socket.submit sock (upkg.plan pkgs.shout)
   printLine ("building " ++ drv ++ " ...")
-  out = upkg.socket.build sock drv
-  printLine ("out: " ++ out)
+  upkg.socket.build sock drv
+  printLine "built over the socket (no nix subprocess); output realised"

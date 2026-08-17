@@ -134,7 +134,33 @@ builtin. The clean fix is shipping the builtin in a forked `@unison/base`
 and the CLI spawns become socket calls with no per-project ceremony.
 
 
-## Socket-native upkg build -- status
+## Socket-native upkg build -- DONE
+
+`./run-forked.sh`-style: a multi-node upkg package builds entirely over
+the socket, no `nix` subprocess, producing the byte-identical output.
+`upkg.socket.main` realises **shout** (greeting -> banner -> shout, plus
+nixpkgs hello + coreutils): each node is rendered as ATerm and added
+(`nixd.addDrv`), then built (`nixd.buildPaths`), all over the socket. The
+result is `/nix/store/1fjn12k4...-shout` -- the same CA output path as the
+CLI build.
+
+Three bugs had to fall, all found by reading the nix source:
+1. **Protocol 1.38 handshake.** At 1.33 (no `realisation-with-path-not-hash`
+   feature) the daemon's CA-build frames misparsed. The full 1.38 handshake
+   (feature negotiation + the 1.35 trust flag) aligns them.
+2. **The addToStore response is a full `ValidPathInfo`, not just the path.**
+   Reading only the path left deriver/narHash/references/times/sigs/ca
+   unread, offsetting the next op -- this was the misalignment that OOM'd on
+   the second `addDrv`. `nixd.skipPathInfoTail` consumes the rest.
+3. **Per-dep output placeholders.** The socket submit must splice each local
+   dep's `upstreamPlaceholder drvPath` (dep-specific), not the generic
+   own-output placeholder, or all local deps collapse to one path.
+
+A guard (`nixd.recvN` throws above 16 MiB, with the length) turns any future
+misalignment into a catchable error instead of an OOM -- since
+`Socket.receiveAtMost` allocates its requested size eagerly.
+
+### earlier status (superseded)
 
 `daemon/upkg-socket.u` renders upkg's real derivations (structuredAttrs,
 floating-CA) as ATerm and adds them over the socket. Proven correct: the

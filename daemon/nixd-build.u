@@ -67,29 +67,8 @@ nixd.queryOutputs sock drvPath =
   Socket.send sock (nixd.putStr drvPath)
   nixd.processStderr sock
   n = nixd.recvNat sock
-  nixd.queryOutputs.go sock n 0
-
-nixd.queryOutputs.go :
-  Socket -> Nat -> Nat -> {IO, Exception} [(Text, Text)]
-nixd.queryOutputs.go sock n i =
-  if i >= n then []
-  else
+  readOne = _ -> let
     k = nixd.recvStr sock
     v = nixd.recvStr sock
-    (k, v) +: nixd.queryOutputs.go sock n (i + 1)
-
--- Op::QueryRealisation = 43. Needs the realisation-with-path-not-hash
--- feature (negotiated at protocol 1.38). DrvOutput is two strings:
--- the drv path and the output name. Returns the realised output
--- path, or None. (For a freshly built CA drv the realisation is
--- keyed under the *resolved* drv, so buildPathsWithResults (op 46)
--- is the more direct readback -- see daemon/README.)
-nixd.queryRealisation :
-  Socket -> Text -> Text -> {IO, Exception} (Optional Text)
-nixd.queryRealisation sock drvPath outputName =
-  Socket.send sock (nixd.putNat 43)
-  Socket.send sock (nixd.putStr drvPath)
-  Socket.send sock (nixd.putStr outputName)
-  nixd.processStderr sock
-  if nixd.recvNat sock == 0 then None
-  else Some (nixd.recvStr sock)
+    (k, v)
+  List.map readOne (List.range 0 n)
