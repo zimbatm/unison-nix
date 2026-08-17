@@ -31,18 +31,33 @@ nixd.putStr t =
   padBytes = Bytes.fromList (List.replicate pad (do 0))
   Bytes.encodeNat64le n ++ bs ++ padBytes
 
+-- Frame strings in this protocol are tiny (paths, versions, error
+-- text). A read this large means a misaligned frame -- and since
+-- Socket.receiveAtMost allocates its requested size eagerly, a huge
+-- length would OOM the runtime instead of failing. Throw first so
+-- the misalignment is a catchable error, not a crash.
+nixd.maxRead : Nat
+nixd.maxRead = 16777216   -- 16 MiB
+
 -- Receive exactly n bytes, looping over receiveAtMost.
 nixd.recvN : Socket -> Nat -> {IO, Exception} Bytes
 nixd.recvN sock n =
-  go = acc -> let
-    got = Bytes.size acc
-    if got >= n then Bytes.take n acc
-    else
-      chunk = Socket.receiveAtMost sock (Nat.diff n got)
-      if Bytes.size chunk == 0 then
-        Exception.raise (Generic.failure "nixd: socket closed early" ())
-      else go (acc ++ chunk)
-  go Bytes.empty
+  if Nat.gt n nixd.maxRead then
+    Exception.raise
+      (Generic.failure
+        ("nixd: implausible read length " ++ Nat.toText n
+          ++ " (misaligned frame)")
+        ())
+  else
+    go = acc -> let
+      got = Bytes.size acc
+      if got >= n then Bytes.take n acc
+      else
+        chunk = Socket.receiveAtMost sock (Nat.diff n got)
+        if Bytes.size chunk == 0 then
+          Exception.raise (Generic.failure "nixd: socket closed early" ())
+        else go (acc ++ chunk)
+    go Bytes.empty
 
 nixd.recvNat : Socket -> {IO, Exception} Nat
 nixd.recvNat sock =
