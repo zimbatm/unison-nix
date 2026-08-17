@@ -144,12 +144,17 @@ CA output `/nix/store/hm998kib...-greeting`. So `upkg.socket.submit`
 produces correct derivations over the socket with no `nix derivation add`.
 
 Two issues remain for a full end-to-end Unison realise:
-1. **CA output query needs the 1.38 feature handshake.** Advertising
-   protocol 1.33 (to skip feature negotiation) also drops the
-   `realisation-with-path-not-hash` feature, so `queryRealisation` (op 43)
-   errors and `queryDerivationOutputMap` (op 41) returns an empty path for
-   floating-CA outputs. Reading a realised CA path back requires the full
-   1.38 handshake advertising that feature (bounded, not yet done).
+1. **CA output query: 1.38 handshake DONE.** `nixd.handshake` now
+   advertises protocol 1.38 and exchanges feature sets (sending
+   `realisation-with-path-not-hash`), then reads the daemon version string
+   and the trust flag (`optional<TrustedFlag>`, new at 1.35). Verified live
+   from both Python and Unison ("daemon protocol 294", trust=1). This
+   enables `nixd.queryRealisation` (op 43, DrvOutput = drvPath + outputName).
+   Remaining nuance: a freshly built CA drv registers its realisation under
+   the *resolved* drv (inputs replaced by content hashes), so querying the
+   original drv path returns None; `buildPathsWithResults` (op 46) returns
+   the built output paths directly and is the clean readback -- its nested
+   BuildResult response is the remaining parse work.
 2. **A Unison-runtime OOM draining a multi-frame build.** `processStderr`
    handles a simple build's few frames but OOMs on a structuredAttrs
    build's ~40 START/RESULT/STOP frames -- while a byte-for-byte Python

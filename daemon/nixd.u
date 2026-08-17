@@ -10,7 +10,12 @@ nixd.magic2 : Nat
 nixd.magic2 = 0x6478696f
 
 nixd.ourVersion : Nat
-nixd.ourVersion = 0x0121  -- protocol 1.33: keeps us < 1.38, skipping feature negotiation
+nixd.ourVersion = 0x0126  -- protocol 1.38: enables feature negotiation
+
+-- The features we advertise. realisation-with-path-not-hash is
+-- required to query content-addressed derivation outputs.
+nixd.ourFeatures : [Text]
+nixd.ourFeatures = ["realisation-with-path-not-hash"]
 
 -- u64 little-endian, matching the daemon.
 nixd.putNat : Nat -> Bytes
@@ -125,24 +130,41 @@ nixd.readFields.go sock n i =
         0
     nixd.readFields.go sock n (i + 1)
 
--- Handshake, then return the negotiated daemon version.
+-- Read and skip a string set: count, then each string.
+nixd.skipStrings : Socket -> {IO, Exception} ()
+nixd.skipStrings sock = nixd.skipStrings.go sock (nixd.recvNat sock) 0
+
+nixd.skipStrings.go : Socket -> Nat -> Nat -> {IO, Exception} ()
+nixd.skipStrings.go sock n i =
+  if i >= n then ()
+  else
+    nixd.skipStr sock
+    nixd.skipStrings.go sock n (i + 1)
+
+-- Handshake at protocol 1.38, then return the negotiated version.
+-- Sequence from NixOS/nix worker-protocol-connection.cc:
+-- magic1+version, read magic2+daemonVersion, exchange feature sets
+-- (>=1.38), send obsolete cpu-affinity + reserve, read
+-- ClientHandshakeInfo (version string >=1.33, trust flag >=1.35),
+-- then processStderr.
 nixd.handshake : Socket -> {IO, Exception} Nat
 nixd.handshake sock =
   Socket.send sock (nixd.putNat nixd.magic1)
+  Socket.send sock (nixd.putNat nixd.ourVersion)
   m2 = nixd.recvNat sock
   if Nat.eq m2 nixd.magic2 |> not then
     Exception.raise (Generic.failure "nixd: bad magic from daemon" ())
   else
     daemonV = nixd.recvNat sock
-    Socket.send sock (nixd.putNat nixd.ourVersion)
-    -- >=1.14: obsolete cpu-affinity nat; >=1.11: reserve-space flag
+    -- >=1.38: send our feature set, read the daemon's.
+    Socket.send sock (nixd.putPaths nixd.ourFeatures)
+    nixd.skipStrings sock
+    -- obsolete cpu-affinity nat (>=1.14); reserve-space flag (>=1.11)
     Socket.send sock (nixd.putNat 0)
     Socket.send sock (nixd.putNat 0)
-    -- >=1.33: ClientHandshakeInfo = the daemon's nix version string.
-    -- (Advertising 1.33 keeps protoVersion < 1.38, skipping the
-    -- feature-set exchange on both sides.) Then a post-handshake
-    -- processStderr, distinct from each op's own.
-    _ = nixd.recvStr sock
+    -- ClientHandshakeInfo: daemon version string, then trust flag.
+    nixd.skipStr sock
+    _trust = nixd.recvNat sock
     nixd.processStderr sock
     daemonV
 
